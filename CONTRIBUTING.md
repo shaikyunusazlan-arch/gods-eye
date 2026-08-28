@@ -15,6 +15,8 @@ npm install
 ./scripts/dev-fresh.sh        # or: GOOGLE_MAPS_API_KEY="…" npm run dev
 ```
 
+**Nix users:** the repo ships a flake — `nix develop` drops you into a shell with the pinned Node 24 and a Chromium already wired up for the Puppeteer QA harnesses (no browser download, works on NixOS). With direnv, add a local `.envrc` containing `use flake`.
+
 You need a **Google Maps API key** with the Map Tiles API enabled (see the [README](README.md#-api-keys)). Most data layers work with no other accounts. On macOS the launcher pulls keys from the Keychain; on any platform you can pass them as env vars or use a `.env` (copy `.env.example`).
 
 Open `http://localhost:4173`. Before sending a PR run `npm run build`, `npm test`, and `npm run test:track` (dev server must be up) — **all three must stay green.**
