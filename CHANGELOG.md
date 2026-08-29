@@ -7,6 +7,10 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ### Added
 
+- Added a keyless RainViewer weather-radar layer (opt-in, `weather-radar`), with
+  its tile URL composed from the API's own frame `path` rather than from the
+  frame timestamp, and unit coverage for latest-frame selection.
+
 - Added honest aircraft identity narration: callsign, operator, registration,
   type, and route come only from selected-contact context, and missing operator,
   route, or type enrichment is named explicitly.
