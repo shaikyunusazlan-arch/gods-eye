@@ -152,6 +152,76 @@ const OVERPASS_UPSTREAMS = [
   'https://overpass.private.coffee/api/interpreter',
 ];
 /**
+ * Extra Overpass mirrors from OVERPASS_EXTRA_UPSTREAMS, tried BEFORE the
+ * built-in list.
+ *
+ * This exists because the built-in mirrors are not reachable from everywhere.
+ * Field note 2026-08-28: from one German consumer connection every one of them
+ * failed at once — overpass-api.de and lz4 refused TCP outright, and
+ * kumi.systems is a CNAME onto private.coffee, so the list held fewer distinct
+ * hosts than it looks like. Every Overpass-backed layer (traffic, mapped
+ * installations, the OSM webcam pack) was dead with no way to fix it short of
+ * editing this file. A network-local mirror belongs in the operator's
+ * environment, not in the repo's default list.
+ *
+ * Extras go FIRST: a mirror someone configured deliberately is a better first
+ * try than one that just timed out for them, and each dead built-in costs a
+ * full OVERPASS_TIMEOUT_MS before the chain moves on.
+ *
+ * **Only add planet-wide instances.** A REGIONAL extract is the dangerous case:
+ * overpass.osm.ch answers fast with HTTP 200 but serves Switzerland only, so
+ * every query outside CH returns an empty element list — which this proxy then
+ * caches as a valid result for 24 h. It fails silently, not loudly.
+ *
+ * @param {string} raw Whitespace/comma-separated URL list.
+ * @returns {Array<string>} Valid absolute http(s) endpoint URLs, in order.
+ */
+export function parseExtraOverpassUpstreams(raw) {
+  const out = [];
+  for (const token of String(raw ?? '').split(/[\s,]+/)) {
+    if (!token) continue;
+    let url;
+    try {
+      url = new URL(token);
+    } catch {
+      console.warn(`[Overpass] ignoring unparseable OVERPASS_EXTRA_UPSTREAMS entry: ${token}`);
+      continue;
+    }
+    // Structural checks only. Unlike osmWebcamStillUrl — whose input is a
+    // world-editable OSM tag — this value comes from the operator's own env, so
+    // a private or localhost address is a legitimate self-hosted instance
+    // rather than an SSRF target, and is deliberately allowed.
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password || !url.hostname) {
+      console.warn(`[Overpass] ignoring unusable OVERPASS_EXTRA_UPSTREAMS entry: ${token}`);
+      continue;
+    }
+    if (!out.includes(url.href)) out.push(url.href);
+  }
+  return out;
+}
+
+/** @type {{raw: string|null, list: Array<string>}} Memo for the resolved chain. */
+let _overpassUpstreamMemo = { raw: null, list: OVERPASS_UPSTREAMS };
+
+/**
+ * The mirror chain to try, extras first.
+ *
+ * Resolved lazily and re-resolved when the env value changes: module evaluation
+ * happens BEFORE Vite's loadEnv() copies .env into process.env, so reading the
+ * variable at module scope would always see undefined.
+ *
+ * @returns {Array<string>} Ordered endpoint URLs.
+ */
+function resolveOverpassUpstreams() {
+  const raw = process.env.OVERPASS_EXTRA_UPSTREAMS ?? '';
+  if (_overpassUpstreamMemo.raw !== raw) {
+    const extra = parseExtraOverpassUpstreams(raw);
+    if (extra.length) console.log(`[Overpass] ${extra.length} extra upstream(s) from OVERPASS_EXTRA_UPSTREAMS, tried first`);
+    _overpassUpstreamMemo = { raw, list: [...extra, ...OVERPASS_UPSTREAMS] };
+  }
+  return _overpassUpstreamMemo.list;
+}
+/**
  * TTL for FRESH cached Overpass responses (ms). Road geometry is static for
  * months — the original 45 s TTL forced a public-mirror round-trip on nearly
  * every viewport revisit and left nothing to serve when the mirrors 502
@@ -2512,7 +2582,7 @@ async function fetchOverpassPayload(body, maxResponseBytes = OVERPASS_MAX_RESPON
   let lastError = null;
   let lastRateLimitPayload = null;
 
-  for (const endpoint of OVERPASS_UPSTREAMS) {
+  for (const endpoint of resolveOverpassUpstreams()) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), OVERPASS_TIMEOUT_MS);
 
