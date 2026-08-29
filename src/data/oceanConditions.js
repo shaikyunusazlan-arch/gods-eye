@@ -4,7 +4,9 @@ import {
   setOverlayEntries,
   setOverlaySourceVisible,
 } from '../overlays/worldOverlay.js';
+import { hitTestWorldOverlay } from '../overlays/worldOverlay.js';
 import { governorRequestRender } from '../renderGovernor.js';
+import { createDriftController } from '../sim/driftController.js';
 import { registerPickOwner, unregisterPickOwner, isOwnedByOtherLayer, resolvePickId } from './pickRegistry.js';
 
 /**
@@ -36,6 +38,7 @@ export const OCEAN_SELECTED_OVERLAY_SOURCE_OPTIONS = Object.freeze({
   collisionCapacity: 0,
   moving: false,
 });
+export const OCEAN_ACTION_OVERLAY_SOURCE_ID = 'ocean-conditions-action';
 
 const ENTITY_ID_PREFIX = 'ndbc:';
 const ACCENT_CSS = '#4dd2ff';
@@ -267,7 +270,10 @@ function forecastHoursToMs(times) {
   return hoursMs.every(Number.isFinite) ? hoursMs : null;
 }
 
-export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST } = {}) {
+export function createOceanConditionsLayer({
+  overlayHost = DEFAULT_OVERLAY_HOST,
+  driftControllerFactory = (options) => createDriftController(options),
+} = {}) {
   let _viewer = null;
   let _dataSource = null;
   let _count = 0;
@@ -278,6 +284,14 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
   let _selectedEntity = null;
   let _highlightEntity = null;
   let _selectionToken = 0;
+  let _driftController = null;
+
+  function ensureDriftController() {
+    if (!_driftController) {
+      _driftController = driftControllerFactory({ viewer: _viewer });
+    }
+    return _driftController;
+  }
 
   function clearSelection() {
     _selectionToken += 1;
@@ -287,7 +301,63 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     _selectedEntity = null;
     _highlightEntity = null;
     overlayHost.clearSource(OCEAN_SELECTED_OVERLAY_SOURCE_ID);
+    overlayHost.clearSource(OCEAN_ACTION_OVERLAY_SOURCE_ID);
     governorRequestRender('ocean-deselect');
+  }
+
+  /**
+   * The DRIFT chip: a separate interactive overlay entry beside the selected
+   * card (the selected source is cohortLimit:1, so the action gets its own
+   * source). `activate` is both the mouse path (hit-tested in the click
+   * handler) and the accessible-button path the overlay host mirrors.
+   */
+  function publishDriftChip(key, position, lat, lon) {
+    overlayHost.setEntries(OCEAN_ACTION_OVERLAY_SOURCE_ID, [{
+      id: `${key}:drift`,
+      position,
+      variant: 'label',
+      title: '▶ DRIFT',
+      accent: '#ffb14d',
+      priority: Number.MAX_SAFE_INTEGER - 1,
+      collisionGroup: 'ambient-card',
+      paintLane: 'selected',
+      protected: true,
+      interactive: true,
+      activate: () => {
+        const controller = ensureDriftController();
+        controller.start({ lat, lon, label: key }).then((result) => {
+          if (!result?.ok) {
+            overlayHost.setEntries(OCEAN_ACTION_OVERLAY_SOURCE_ID, [{
+              id: `${key}:drift-unavailable`,
+              position,
+              variant: 'label',
+              title: '⚠ DRIFT UNAVAILABLE',
+              accent: '#ff6b5e',
+              priority: Number.MAX_SAFE_INTEGER - 1,
+              collisionGroup: 'ambient-card',
+              paintLane: 'selected',
+              protected: true,
+              interactive: false,
+              verticalOnly: true,
+              placement: 'below',
+              edgeFade: 'keyhole',
+              horizonCull: true,
+              terrainOcclusion: false,
+              gapPx: 30,
+            }], OCEAN_SELECTED_OVERLAY_SOURCE_OPTIONS);
+            governorRequestRender('ocean-drift-unavailable');
+          }
+        });
+        return true;
+      },
+      accessibilityLabel: 'Start drift simulation at this point',
+      verticalOnly: true,
+      placement: 'below',
+      edgeFade: 'keyhole',
+      horizonCull: true,
+      terrainOcclusion: false,
+      gapPx: 30,
+    }], OCEAN_SELECTED_OVERLAY_SOURCE_OPTIONS);
   }
 
   function publishSelectionCard(key, position, lines) {
@@ -354,6 +424,8 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     }
     const lines = formatBuoyCardLines(record);
     publishSelectionCard(entityId, position, lines);
+    // A buoy is in the water by definition — the drift action is always valid.
+    publishDriftChip(entityId, position, record.lat, record.lon);
     if (token !== _selectionToken) return;
     await appendForecast(entityId, position, lines, record.lat, record.lon);
   }
@@ -378,9 +450,14 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
       const payload = response.ok ? await response.json() : null;
       if (token !== _selectionToken) return;
       const forecastLines = payload ? formatMarineForecastLines(payload, Date.now()) : [];
-      publishSelectionCard(key, position, forecastLines.length
-        ? [...baseLines, ...forecastLines]
-        : [...baseLines, 'NO MARINE DATA']);
+      if (forecastLines.length) {
+        publishSelectionCard(key, position, [...baseLines, ...forecastLines]);
+        // Marine data resolved → this point is water: offer the drift action.
+        publishDriftChip(key, position, latitude, longitude);
+      } else {
+        // The MVP land/sea mask: no marine forecast means no drift either.
+        publishSelectionCard(key, position, [...baseLines, 'NO MARINE DATA']);
+      }
     } catch {
       if (token === _selectionToken) {
         publishSelectionCard(key, position, [...baseLines, 'NO MARINE DATA']);
@@ -396,6 +473,14 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     if (_clickHandler || !viewer?.scene?.canvas || typeof Cesium.ScreenSpaceEventHandler !== 'function') return;
     _clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     _clickHandler.setInputAction((click) => {
+      // Painted DRIFT chip first — it sits above the scene (cctv.js idiom).
+      const chipHit = hitTestWorldOverlay(click.position.x, click.position.y, {
+        sourceId: OCEAN_ACTION_OVERLAY_SOURCE_ID,
+      });
+      if (chipHit?.entry?.activate) {
+        chipHit.entry.activate();
+        return;
+      }
       const picked = viewer.scene.pick(click.position);
       if (picked) {
         const pickedId = resolvePickId(picked);
@@ -464,6 +549,7 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     disable(viewer) {
       _enabled = false;
       clearSelection();
+      _driftController?.dispose();
       unregisterPickOwner('ocean-conditions');
       destroyClickHandler();
       if (_dataSource) _dataSource.show = false;
@@ -547,6 +633,8 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     destroy(viewer) {
       _enabled = false;
       clearSelection();
+      _driftController?.dispose();
+      _driftController = null;
       unregisterPickOwner('ocean-conditions');
       destroyClickHandler();
       overlayHost.clearSource(OCEAN_OVERLAY_SOURCE_ID);
@@ -594,6 +682,9 @@ export function createOceanConditionsLayer({ overlayHost = DEFAULT_OVERLAY_HOST 
     /** Test seams — drive the production selection paths without a DOM. */
     _selectForTest(entityId) {
       return selectStation(entityId);
+    },
+    _selectOceanPointForTest(latitude, longitude, position) {
+      return selectOceanPoint(latitude, longitude, position);
     },
     _clearSelectionForTest() {
       clearSelection();

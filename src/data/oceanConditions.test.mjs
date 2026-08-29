@@ -19,6 +19,7 @@ import {
   OCEAN_OVERLAY_SOURCE_ID,
   OCEAN_SELECTED_OVERLAY_SOURCE_ID,
   OCEAN_SELECTED_OVERLAY_SOURCE_OPTIONS,
+  OCEAN_ACTION_OVERLAY_SOURCE_ID,
   OCEAN_OVERLAY_COHORT_LIMIT,
 } from './oceanConditions.js';
 
@@ -310,6 +311,130 @@ test('analyst records come from live entities and are JSON-safe', async () => {
     assert.deepEqual(JSON.parse(JSON.stringify(records)), records);
     layer.disable(viewer);
     assert.deepEqual(layer.getAnalystRecords(), []);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+function makeDriftSpy() {
+  return {
+    startCalls: [],
+    disposeCalls: 0,
+    async start(options) { this.startCalls.push(options); return { ok: true }; },
+    dispose() { this.disposeCalls += 1; },
+    isActive: () => false,
+  };
+}
+
+test('buoy selection publishes a DRIFT chip whose activation starts the simulator', async () => {
+  const overlayHost = makeOverlayHostSpy();
+  const driftSpy = makeDriftSpy();
+  const layer = createOceanConditionsLayer({ overlayHost, driftControllerFactory: () => driftSpy });
+  const viewer = makeViewer();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (String(url).includes('/api/ocean/marine')
+    ? { ok: true, json: async () => MARINE_PAYLOAD }
+    : obsResponse([STATION_46222]));
+  try {
+    layer.init(viewer);
+    layer.enable(viewer);
+    await layer.update(viewer);
+    await layer._selectForTest('ndbc:46222');
+
+    const chipCall = overlayHost.calls.findLast(
+      ([kind, sourceId]) => kind === 'entries' && sourceId === OCEAN_ACTION_OVERLAY_SOURCE_ID,
+    );
+    assert.ok(chipCall, 'DRIFT chip published to the action source');
+    const chip = chipCall[2][0];
+    assert.equal(chip.interactive, true);
+    assert.equal(typeof chip.activate, 'function');
+    assert.ok(chip.accessibilityLabel);
+    assert.match(chip.title, /DRIFT/);
+
+    chip.activate();
+    assert.equal(driftSpy.startCalls.length, 1);
+    assert.ok(Math.abs(driftSpy.startCalls[0].lat - 33.614) < 1e-9);
+    assert.ok(Math.abs(driftSpy.startCalls[0].lon + 118.314) < 1e-9);
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('an ocean point with no marine data gets no DRIFT chip', async () => {
+  const overlayHost = makeOverlayHostSpy();
+  const driftSpy = makeDriftSpy();
+  const layer = createOceanConditionsLayer({ overlayHost, driftControllerFactory: () => driftSpy });
+  const viewer = makeViewer();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (String(url).includes('/api/ocean/marine')
+    ? { ok: true, json: async () => ({ marine: null, wind: null }) }
+    : obsResponse([]));
+  try {
+    layer.init(viewer);
+    layer.enable(viewer);
+    await layer._selectOceanPointForTest(33.5, -118.5, { x: 1, y: 2, z: 3 });
+    assert.ok(!overlayHost.calls.some(
+      ([kind, sourceId]) => kind === 'entries' && sourceId === OCEAN_ACTION_OVERLAY_SOURCE_ID,
+    ), 'no chip without marine forcing');
+    const lastCard = overlayHost.calls.findLast(
+      ([kind, sourceId]) => kind === 'entries' && sourceId === OCEAN_SELECTED_OVERLAY_SOURCE_ID,
+    );
+    assert.ok(lastCard[2][0].details.includes('NO MARINE DATA'));
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('an ocean point with marine data gets a DRIFT chip at the clicked coordinates', async () => {
+  const overlayHost = makeOverlayHostSpy();
+  const driftSpy = makeDriftSpy();
+  const layer = createOceanConditionsLayer({ overlayHost, driftControllerFactory: () => driftSpy });
+  const viewer = makeViewer();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (String(url).includes('/api/ocean/marine')
+    ? { ok: true, json: async () => MARINE_PAYLOAD }
+    : obsResponse([]));
+  try {
+    layer.init(viewer);
+    layer.enable(viewer);
+    await layer._selectOceanPointForTest(33.5, -118.5, { x: 1, y: 2, z: 3 });
+    const chipCall = overlayHost.calls.findLast(
+      ([kind, sourceId]) => kind === 'entries' && sourceId === OCEAN_ACTION_OVERLAY_SOURCE_ID,
+    );
+    assert.ok(chipCall, 'chip published once the forecast confirms water');
+    chipCall[2][0].activate();
+    assert.deepEqual(
+      [driftSpy.startCalls[0].lat, driftSpy.startCalls[0].lon],
+      [33.5, -118.5],
+    );
+  } finally {
+    globalThis.fetch = savedFetch;
+  }
+});
+
+test('disable disposes an active drift simulation and clears the chip source', async () => {
+  const overlayHost = makeOverlayHostSpy();
+  const driftSpy = makeDriftSpy();
+  const layer = createOceanConditionsLayer({ overlayHost, driftControllerFactory: () => driftSpy });
+  const viewer = makeViewer();
+  const savedFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => (String(url).includes('/api/ocean/marine')
+    ? { ok: true, json: async () => MARINE_PAYLOAD }
+    : obsResponse([STATION_46222]));
+  try {
+    layer.init(viewer);
+    layer.enable(viewer);
+    await layer.update(viewer);
+    await layer._selectForTest('ndbc:46222');
+    overlayHost.calls.findLast(
+      ([kind, sourceId]) => kind === 'entries' && sourceId === OCEAN_ACTION_OVERLAY_SOURCE_ID,
+    )[2][0].activate();
+
+    layer.disable(viewer);
+    assert.equal(driftSpy.disposeCalls, 1);
+    assert.ok(overlayHost.calls.some(
+      ([kind, sourceId]) => kind === 'clear' && sourceId === OCEAN_ACTION_OVERLAY_SOURCE_ID,
+    ));
   } finally {
     globalThis.fetch = savedFetch;
   }
