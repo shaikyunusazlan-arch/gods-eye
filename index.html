@@ -587,6 +587,26 @@
     </div>
   </div>
 
+  <!-- Mapped Installations walk: PREV/NEXT through the viewport roster. Hidden
+       unless the layer is on — it has nothing to say about an absent layer. -->
+  <div id="installations-nav" class="panel-collapsible collapsed" data-panel-id="installations-nav" hidden>
+    <div class="installations-nav-inner">
+      <div class="panel-header">
+        <span class="panel-title">INSTALLATIONS</span>
+        <span class="panel-divider"></span>
+        <button class="panel-collapse-btn" data-collapse-target="installations-nav" title="Collapse panel">+</button>
+      </div>
+      <div class="installations-nav-body">
+        <div class="installations-nav-row">
+          <button id="installations-prev-btn" type="button" aria-label="Previous mapped installation" title="Previous installation (,)">◀</button>
+          <output id="installations-nav-count" aria-live="polite">— / —</output>
+          <button id="installations-next-btn" type="button" aria-label="Next mapped installation" title="Next installation (.)">▶</button>
+        </div>
+        <span id="installations-nav-label" class="installations-nav-label">NOTHING SELECTED</span>
+      </div>
+    </div>
+  </div>
+
   <!-- CCTV Coverage Panel -->
   <div id="cctv-panel" class="panel-collapsible collapsed" data-panel-id="cctv-panel">
     <div class="panel-glow"></div>
