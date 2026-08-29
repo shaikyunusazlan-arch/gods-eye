@@ -282,7 +282,7 @@ function waitForTilesLoaded(page, timeoutMs = 15000) {
       }
       return true; // no tileset in the scene — nothing to wait for
     },
-    { timeout: timeoutMs }
+    { timeout: timeoutMs, polling: 200 }
   ).then(() => true).catch(() => false);
 }
 
@@ -336,6 +336,9 @@ async function main() {
   const chromeExecutable = findChromeExecutable();
   const browser = await puppeteer.launch({
     headless: HEADFUL ? false : 'new',
+    // Same hardening as track-regression.mjs: this machine intermittently
+    // stalls single CDP calls past the 180 s default under SwiftShader load.
+    protocolTimeout: 300_000,
     ...(chromeExecutable ? { executablePath: chromeExecutable } : {}),
     args: [
       '--no-sandbox',
@@ -363,11 +366,17 @@ async function main() {
         }
       }
     });
+    // Every waitForFunction below polls on a TIMER, never on the default
+    // requestAnimationFrame. The app idles through an explicit render governor,
+    // and under SwiftShader a rAF-driven polling loop competes with the render
+    // loop the app needs to finish initialising: measured 2026-08-29, the boot
+    // predicate stayed false past 45 s on rAF and resolved in 0.2 s on
+    // `polling: 200`. track-regression.mjs already carries this.
     console.log('Loading app...');
     await page.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await page.waitForFunction(
       () => window.__godsEyeView && window.__godsEyeView.viewer && window.__godsEyeView.dataManager,
-      { timeout: 60000 }
+      { timeout: 60000, polling: 200 }
     );
     // Let the initial fly-to Austin and first tiles settle.
     await sleep(4000);
@@ -433,7 +442,7 @@ async function main() {
         const ui = mod.getUIState();
         return ui.loading && ui.loading.active === false;
       },
-      { timeout: drainBudgetMs }
+      { timeout: drainBudgetMs, polling: 200 }
     ).then(() => true).catch(() => false);
     record(`geometry-load queue drains within ${Math.round(drainBudgetMs / 1000)}s (N=${camCount})`,
       drained ? true : (HEADFUL ? false : null),
@@ -504,7 +513,7 @@ async function main() {
     if (tilesSeenLoaded) {
       sampleFloorOk = await page.waitForFunction(
         (base) => window.__qaCounters.sampleHeight - base >= 1,
-        { timeout: 30000 },
+        { timeout: 30000, polling: 200 },
         c0.sampleHeight
       ).then(() => true).catch(() => false);
     }
