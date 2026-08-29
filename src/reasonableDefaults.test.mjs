@@ -38,9 +38,17 @@ import {
 } from './scopeMask.js';
 import { ShareLinkManager } from './sharelink.js';
 
-const uiSource = fs.readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
-const indexHtml = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-const shareSource = fs.readFileSync(new URL('./sharelink.js', import.meta.url), 'utf8');
+/**
+ * Read a source file with line endings normalised to LF, so the `\n`-bearing
+ * anchors below match on a Windows checkout with `core.autocrlf=true` too.
+ */
+function readSource(relativePath) {
+  return fs.readFileSync(new URL(relativePath, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+}
+
+const uiSource = readSource('./ui.js');
+const indexHtml = readSource('../index.html');
+const shareSource = readSource('./sharelink.js');
 
 /** Slice ui.js between two literal anchors, so a pin reads one method, not the file. */
 function uiBlock(start, end) {
