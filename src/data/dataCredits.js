@@ -95,6 +95,20 @@ export const DATA_CREDITS = [
       '(CC BY 4.0)',
   },
   {
+    key: 'noaa-ndbc',
+    html:
+      'Ocean buoy observations: ' +
+      '<a href="https://www.ndbc.noaa.gov/" target="_blank" rel="noopener">NOAA National Data Buoy Center</a> ' +
+      '(U.S. public domain)',
+  },
+  {
+    key: 'open-meteo-marine',
+    html:
+      'Marine forecasts: ' +
+      '<a href="https://open-meteo.com/en/licence" target="_blank" rel="noopener">Weather data by Open-Meteo.com</a> ' +
+      '(CC BY 4.0)',
+  },
+  {
     key: 'google-news-rss',
     html:
       'Cockpit regional headlines: ' +

@@ -1602,6 +1602,7 @@ its criteria cannot be silently ignored.
 | CCTV | Austin + Caltrans (CA) + TfL London Open Data + Street View fallback | `src/data/cctv.js` | `/api/cctv` | 10s (active) |
 | Radio | Radio Browser (public-domain station directory) | `src/data/radio.js` | `/api/radio/stations`, `/api/radio/click/:uuid` | 45 min directory refresh |
 | Bikeshare 🚲 | GBFS (Lyft + BCycle) | `src/data/bikeshare.js` | `/api/gbfs` | 60s |
+| Ocean Conditions 🌊 | NOAA NDBC bulk observations + Open-Meteo Marine forecasts | `src/data/oceanConditions.js` | `/api/ocean/obs`, `/api/ocean/marine`, `/api/ocean/marine-grid` | 10 min |
 | Datacenters ▣ | OSM extract (bundled) | `src/data/localLayers.js` | — | static |
 | Dams ▰ | OpenInfraMap/OSM extract (bundled) | `src/data/localLayers.js` | — | static |
 | Submarine Cables ◠ | TeleGeography public map (bundled) | `src/data/telegeographySubmarineCables.js` | — | static |
@@ -2243,6 +2244,33 @@ silently demoting every later lookup for the session.
   pathological field and 5,200-object normal field without relaxing budgets.
 - `src/data/detectionDraw.js` performs the batched, DPI-crisp canvas drawing for tier-colored labels, corner brackets, callouts, and distance-scaled tracked boxes. Unit tests cover label measurement and draw geometry.
 - `src/data/trackedReadout.js` publishes a protected shared-host callout above tracked aircraft and satellites or selected mapped installations. It reads only each layer's cached display position—never a fresh entity position evaluation—preventing readout jitter against the rendered target. AIS selection remains in the vessel source's protected card path.
+
+### Ocean Conditions + Drift Simulation (August 2026)
+
+- `ocean-conditions` renders ~900 NOAA NDBC stations from one server-cached
+  bulk feed (`/api/ocean/obs`, 10 min TTL, 60 min stale window, non-fatal
+  name join from `activestations.xml`) as static-geometry entities
+  color-banded by significant wave height; wave-reporting stations publish
+  ambient height labels through the shared overlay host. Cards show OBSERVED
+  station values with absent fields omitted, and append `FC`-prefixed
+  Open-Meteo Marine forecast lines (`/api/ocean/marine`, 0.1° cells) so
+  observation and forecast are never conflated. Clicking open water with
+  nothing selected drops an ocean-point forecast card; no usable marine data
+  renders `NO MARINE DATA` and suppresses the drift action (the MVP land/sea
+  mask). Analyst queries cover waveHeightM/wavePeriodS/windSpeedMs/gustMs/
+  sstC/pressureHpa. Share token `o`.
+- The `▶ DRIFT` chip (its own interactive overlay source beside the selected
+  card) runs a person-in-water leeway Monte Carlo: USCG taxonomy PIW-1
+  coefficients (Allen & Plourde 1999 / Allen 2005; Breivik & Allen 2008
+  formulation, citations in `src/sim/leeway.js`), 10⁴ particles, 24 h
+  forecast horizon, forced by a 5×5 × 0.5° Open-Meteo marine+wind grid
+  (`/api/ocean/marine-grid`, two multi-point upstream calls). The ensemble
+  runs in a worker (`src/sim/leeway.worker.mjs`), renders as a
+  `PointPrimitiveCollection` in the `ocean-drift` sprite slot, and scrubs
+  through a self-contained panel labeled `SIMULATED DRIFT ENSEMBLE — NOT A
+  SAR PRODUCT`. Forcing gaps are zero-filled and flagged `⚠ forcing gaps`;
+  forecast currents are coarse model output (no nearshore eddies, tides, or
+  Stokes drift), and the visualization makes no operational claim.
 
 ### Not Currently in Runtime
 

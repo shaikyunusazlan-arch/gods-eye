@@ -176,6 +176,14 @@ const LAYER_ALIASES = new Map([
   ['firms', 'local-firms'],
   ['fires', 'local-firms'],
   ['active fires', 'local-firms'],
+  ['ocean', 'ocean-conditions'],
+  ['ocean conditions', 'ocean-conditions'],
+  ['buoys', 'ocean-conditions'],
+  ['buoy', 'ocean-conditions'],
+  ['sea state', 'ocean-conditions'],
+  ['waves', 'ocean-conditions'],
+  ['marine', 'ocean-conditions'],
+  ['ndbc', 'ocean-conditions'],
 ]);
 
 const CITY_ALIASES = new Map([
