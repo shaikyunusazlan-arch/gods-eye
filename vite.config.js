@@ -5641,7 +5641,7 @@ const GEV_REALTIME_TOOLS = [
         layerId: {
           type: 'string',
           description:
-            'Common-name mapping for the non-obvious ids: space mission(s) → rocket-launches; fires/wildfires/active fires → local-firms (NASA FIRMS); ships/vessels/boats → ais-live-vessels; undersea/submarine cables → telegeography-submarine-cables; datacenters → local-datacenters; dams → local-dams; bikes/bike share → bikeshare; street traffic/congestion → traffic; traffic cameras → cctv; internet radio/stations → radio.',
+            'Common-name mapping for the non-obvious ids: space mission(s) → rocket-launches; fires/wildfires/active fires → local-firms (NASA FIRMS); ships/vessels/boats → ais-live-vessels; undersea/submarine cables → telegeography-submarine-cables; datacenters → local-datacenters; dams → local-dams; bikes/bike share → bikeshare; street traffic/congestion → traffic; traffic cameras → cctv; internet radio/stations → radio; buoys/sea state/waves/marine → ocean-conditions (NOAA NDBC).',
           enum: [
             'flights',
             'military',
@@ -5657,6 +5657,7 @@ const GEV_REALTIME_TOOLS = [
             'local-dams',
             'telegeography-submarine-cables',
             'local-firms',
+            'ocean-conditions',
           ],
         },
         enabled: { type: 'boolean' },
@@ -5688,6 +5689,7 @@ const GEV_REALTIME_TOOLS = [
             'local-dams',
             'telegeography-submarine-cables',
             'local-firms',
+            'ocean-conditions',
           ],
           description: 'Optional layer row to scroll into view and highlight.',
         },
@@ -6105,8 +6107,8 @@ const GEV_REALTIME_TOOLS = [
       properties: {
         layers: {
           type: 'array',
-          items: { type: 'string', enum: ['flights', 'military', 'ais-live-vessels', 'local-firms', 'earthquakes'] },
-          description: 'Layers to query. fires/wildfires → local-firms; ships/vessels → ais-live-vessels.',
+          items: { type: 'string', enum: ['flights', 'military', 'ais-live-vessels', 'local-firms', 'earthquakes', 'ocean-conditions'] },
+          description: 'Layers to query. fires/wildfires → local-firms; ships/vessels → ais-live-vessels; buoys/waves/sea state → ocean-conditions.',
         },
         scope: {
           type: 'object',
@@ -6121,7 +6123,7 @@ const GEV_REALTIME_TOOLS = [
         },
         filters: {
           type: 'array',
-          description: 'Attribute predicates, ANDed. ALTITUDE IS METERS (40,000 ft = 12192). Fields: altitudeM, speedMps, military, onGround, aircraftClass, callsign, operator, routeOrigin, routeDestination, originCountry (flights); speedKts, shipType, destination (ships); frp, confidence (fires); magnitude, depthKm, place (earthquakes).',
+          description: 'Attribute predicates, ANDed. ALTITUDE IS METERS (40,000 ft = 12192). Fields: altitudeM, speedMps, military, onGround, aircraftClass, callsign, operator, routeOrigin, routeDestination, originCountry (flights); speedKts, shipType, destination (ships); frp, confidence (fires); magnitude, depthKm, place (earthquakes); waveHeightM, wavePeriodS, windSpeedMs, gustMs, sstC, pressureHpa, stationId, name (ocean buoys).',
           items: {
             type: 'object',
             additionalProperties: false,
