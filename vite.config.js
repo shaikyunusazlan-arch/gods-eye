@@ -40,6 +40,7 @@ import {
   isOverBudget as isTomTomOverBudget,
 } from './src/data/tomtomTiles.js';
 import { filterTrailing24h, parseFirmsCsv } from './src/data/firmsCsv.js';
+import { parseNdbcLatestObs, parseActiveStationsXml } from './src/data/ndbcText.js';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { defineConfig, loadEnv } from 'vite';
@@ -7271,6 +7272,355 @@ function weatherEffectsProxy() {
   };
 }
 
+// ── Ocean conditions: NDBC bulk observations + Open-Meteo Marine forecasts ──
+const OCEAN_OBS_URL = 'https://www.ndbc.noaa.gov/data/latest_obs/latest_obs.txt';
+const OCEAN_STATIONS_URL = 'https://www.ndbc.noaa.gov/activestations.xml';
+const OCEAN_OBS_CACHE_MS = 10 * 60_000;
+const OCEAN_OBS_STALE_MS = 60 * 60_000;
+const OCEAN_STATIONS_CACHE_MS = 24 * 3600_000;
+const OCEAN_MARINE_CACHE_MS = 15 * 60_000;
+const OCEAN_MARINE_STALE_MS = 60 * 60_000;
+const OCEAN_MARINE_MAX_CACHE = 120;
+const OCEAN_GRID_CACHE_MS = 30 * 60_000;
+const OCEAN_GRID_STALE_MS = 120 * 60_000;
+const OCEAN_GRID_MAX_CACHE = 24;
+const OCEAN_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+let _oceanObsCache = null;
+let _oceanStationsCache = null;
+const _oceanObsInFlight = new Map();
+const _oceanMarineCache = new Map();
+const _oceanMarineInFlight = new Map();
+const _oceanGridCache = new Map();
+const _oceanGridInFlight = new Map();
+const _oceanObsRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 30, globalMax: 90 });
+const _oceanMarineRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 45, globalMax: 120 });
+const _oceanGridRateLimiter = makeRateLimiter({ windowMs: 60_000, max: 6, globalMax: 18 });
+
+/**
+ * Join station names/types from activestations.xml metadata onto parsed
+ * observation records; stations without metadata keep null name/type.
+ */
+export function normalizeOceanObs(records, stationsMeta) {
+  return records.map((record) => {
+    const meta = stationsMeta ? stationsMeta.get(record.stationId) : undefined;
+    return { ...record, name: meta?.name || null, type: meta?.type || null };
+  });
+}
+
+/**
+ * 5×5 forecast-grid axes at 0.5° spacing centered on the drift seed —
+ * 24 h of drift at ~1 m/s is ≈0.8°, so the ±1.0° box covers the ensemble.
+ * Values are range-clamped (a near-pole/dateline seed degrades gracefully
+ * to duplicate edge nodes) and rounded so cache keys stay stable.
+ */
+export function buildMarineGridAxes(latitude, longitude) {
+  const axis = (center, min, max) => {
+    const values = [];
+    for (let i = -2; i <= 2; i += 1) {
+      values.push(Number(Math.min(max, Math.max(min, center + i * 0.5)).toFixed(4)));
+    }
+    return values;
+  };
+  return { lats: axis(latitude, -90, 90), lons: axis(longitude, -180, 180) };
+}
+
+/**
+ * Open-Meteo hourly times are ISO strings WITHOUT a zone suffix but are UTC
+ * when requested with timezone=UTC — append the zone explicitly. Returns
+ * null when any entry is unparseable or the list is empty.
+ */
+export function marineHoursToMs(times) {
+  if (!Array.isArray(times) || times.length === 0) return null;
+  // Strict format gate first — V8's lenient Date.parse would accept garbage.
+  if (!times.every((time) => typeof time === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(time))) return null;
+  const hoursMs = times.map((time) => Date.parse(`${time}:00Z`));
+  return hoursMs.every(Number.isFinite) ? hoursMs : null;
+}
+
+/**
+ * Zip multi-point marine + wind upstream responses into per-node forcing
+ * arrays. Open-Meteo returns an ARRAY for comma-separated coordinate lists
+ * (confirmed live 2026-08-28) and a single object for one point — both are
+ * accepted. Returns null on node-count mismatch or missing hours so callers
+ * treat a shape drift as an upstream failure, never as empty forcing.
+ */
+export function normalizeMarineGridUpstream(marineUpstream, windUpstream, nodeCount) {
+  const marine = Array.isArray(marineUpstream) ? marineUpstream : [marineUpstream];
+  const wind = Array.isArray(windUpstream) ? windUpstream : [windUpstream];
+  if (marine.length !== nodeCount || wind.length !== nodeCount) return null;
+  const hoursMs = marineHoursToMs(marine[0]?.hourly?.time);
+  if (!hoursMs) return null;
+  const nodes = [];
+  for (let i = 0; i < nodeCount; i += 1) {
+    const marineHourly = marine[i]?.hourly ?? {};
+    const windHourly = wind[i]?.hourly ?? {};
+    nodes.push({
+      waveHeightM: marineHourly.wave_height ?? [],
+      currentKmh: marineHourly.ocean_current_velocity ?? [],
+      currentDirDeg: marineHourly.ocean_current_direction ?? [],
+      windMs: windHourly.wind_speed_10m ?? [],
+      windDirDeg: windHourly.wind_direction_10m ?? [],
+    });
+  }
+  return { hoursMs, nodes };
+}
+
+/**
+ * Fetch and parse the NDBC bulk latest-observations feed. Throws on HTTP
+ * errors and on non-NDBC bodies (HTML error pages) so broken upstream
+ * payloads are never cached. `fetchImpl` is injectable for tests.
+ */
+export async function fetchOceanObs({ fetchImpl = fetch, timeoutMs = 20_000 } = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(OCEAN_OBS_URL, { signal: controller.signal });
+    if (!response.ok) throw new Error(`Upstream returned ${response.status}`);
+    const text = await readResponseTextCapped(response, OCEAN_MAX_RESPONSE_BYTES);
+    const records = parseNdbcLatestObs(text);
+    if (records === null) throw new Error('non-NDBC upstream response');
+    return { fetchedAtMs: Date.now(), stations: records };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function trimOceanCache(cache, maxEntries) {
+  while (cache.size > maxEntries) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+function oceanProxy() {
+  async function loadOceanStationsMeta() {
+    const now = Date.now();
+    if (_oceanStationsCache && now - _oceanStationsCache.cachedAt <= OCEAN_STATIONS_CACHE_MS) {
+      return _oceanStationsCache.stations;
+    }
+    try {
+      const xml = await fetchRegionalText(OCEAN_STATIONS_URL, {
+        maxBytes: OCEAN_MAX_RESPONSE_BYTES,
+        timeoutMs: 15_000,
+      });
+      const stations = parseActiveStationsXml(xml);
+      if (stations.size > 0) _oceanStationsCache = { stations, cachedAt: now };
+      return stations;
+    } catch {
+      // Name/type enrichment is decorative — never let it take obs down.
+      return _oceanStationsCache?.stations ?? new Map();
+    }
+  }
+
+  async function refreshObs() {
+    const obs = await fetchOceanObs();
+    const stationsMeta = await loadOceanStationsMeta();
+    const payload = {
+      status: 'ready',
+      fetchedAtMs: obs.fetchedAtMs,
+      count: obs.stations.length,
+      stations: normalizeOceanObs(obs.stations, stationsMeta),
+    };
+    _oceanObsCache = { payload, cachedAt: Date.now() };
+    return payload;
+  }
+
+  async function refreshMarine(point, key) {
+    const shared = {
+      latitude: point.latitude.toFixed(5),
+      longitude: point.longitude.toFixed(5),
+      forecast_days: '2',
+      timezone: 'UTC',
+    };
+    const marineParams = new URLSearchParams({
+      ...shared,
+      hourly: 'wave_height,wave_direction,wave_period,sea_surface_temperature,ocean_current_velocity,ocean_current_direction',
+    });
+    const windParams = new URLSearchParams({
+      ...shared,
+      hourly: 'wind_speed_10m,wind_direction_10m',
+      wind_speed_unit: 'ms', // forecast API defaults to km/h — request m/s explicitly
+    });
+    const [marineResult, windResult] = await Promise.allSettled([
+      fetchRegionalJson(`https://marine-api.open-meteo.com/v1/marine?${marineParams}`, {
+        maxBytes: WEATHER_EFFECTS_MAX_RESPONSE_BYTES,
+      }),
+      fetchRegionalJson(`https://api.open-meteo.com/v1/forecast?${windParams}`, {
+        maxBytes: WEATHER_EFFECTS_MAX_RESPONSE_BYTES,
+      }),
+    ]);
+    const marine = marineResult.status === 'fulfilled' ? marineResult.value : null;
+    const wind = windResult.status === 'fulfilled' ? windResult.value : null;
+    if (!marine && !wind) throw new Error('Marine forecast unavailable');
+    const payload = {
+      status: marine && wind ? 'ready' : 'partial',
+      retrievedAt: new Date().toISOString(),
+      coordinates: point,
+      marine: marine?.hourly ?? null,
+      marineUnits: marine?.hourly_units ?? null,
+      wind: wind?.hourly ?? null,
+      windUnits: wind?.hourly_units ?? null,
+    };
+    _oceanMarineCache.set(key, { payload, cachedAt: Date.now() });
+    trimOceanCache(_oceanMarineCache, OCEAN_MARINE_MAX_CACHE);
+    return payload;
+  }
+
+  async function refreshGrid(point, key) {
+    const axes = buildMarineGridAxes(point.latitude, point.longitude);
+    // Row-major node order: nodes[latIndex * lons.length + lonIndex].
+    const lats = [];
+    const lons = [];
+    for (const lat of axes.lats) {
+      for (const lon of axes.lons) {
+        lats.push(lat);
+        lons.push(lon);
+      }
+    }
+    const shared = {
+      latitude: lats.join(','),
+      longitude: lons.join(','),
+      forecast_days: '2',
+      timezone: 'UTC',
+    };
+    const marineParams = new URLSearchParams({
+      ...shared,
+      hourly: 'wave_height,ocean_current_velocity,ocean_current_direction',
+    });
+    const windParams = new URLSearchParams({
+      ...shared,
+      hourly: 'wind_speed_10m,wind_direction_10m',
+      wind_speed_unit: 'ms',
+    });
+    const [marineUpstream, windUpstream] = await Promise.all([
+      fetchRegionalJson(`https://marine-api.open-meteo.com/v1/marine?${marineParams}`, {
+        maxBytes: OCEAN_MAX_RESPONSE_BYTES,
+        timeoutMs: 15_000,
+      }),
+      fetchRegionalJson(`https://api.open-meteo.com/v1/forecast?${windParams}`, {
+        maxBytes: OCEAN_MAX_RESPONSE_BYTES,
+        timeoutMs: 15_000,
+      }),
+    ]);
+    const grid = normalizeMarineGridUpstream(marineUpstream, windUpstream, lats.length);
+    if (!grid) throw new Error('Marine grid response shape mismatch');
+    const payload = {
+      status: 'ready',
+      retrievedAt: new Date().toISOString(),
+      seed: point,
+      grid: axes,
+      hoursMs: grid.hoursMs,
+      nodes: grid.nodes,
+    };
+    _oceanGridCache.set(key, { payload, cachedAt: Date.now() });
+    trimOceanCache(_oceanGridCache, OCEAN_GRID_MAX_CACHE);
+    return payload;
+  }
+
+  function install(middlewares) {
+    middlewares.use('/api/ocean', async (req, res) => {
+      const sendJson = (status, headers, body) => {
+        if (res.headersSent) return;
+        res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+        res.end(JSON.stringify(body));
+      };
+      try {
+        if (req.method !== 'GET') {
+          sendJson(405, {}, { error: 'Method Not Allowed' });
+          return;
+        }
+        const subPath = String(req.url || '').split('?')[0];
+
+        if (subPath === '/obs') {
+          if (!_oceanObsRateLimiter(clientKey(req))) {
+            sendJson(429, { 'Retry-After': '10' }, { error: 'Rate limit exceeded' });
+            return;
+          }
+          const now = Date.now();
+          if (_oceanObsCache && now - _oceanObsCache.cachedAt <= OCEAN_OBS_CACHE_MS) {
+            sendJson(200, { 'Cache-Control': 'public, max-age=120', 'X-Ocean-Obs': 'HIT' },
+              { ..._oceanObsCache.payload, status: 'cached' });
+            return;
+          }
+          const request = coalesceProxyRequest(_oceanObsInFlight, 'obs', () => refreshObs());
+          try {
+            const payload = await request.promise;
+            sendJson(200, { 'Cache-Control': 'public, max-age=120', 'X-Ocean-Obs': request.shared ? 'INFLIGHT' : 'MISS' }, payload);
+          } catch {
+            if (_oceanObsCache && now - _oceanObsCache.cachedAt <= OCEAN_OBS_STALE_MS) {
+              sendJson(200, { 'Cache-Control': 'no-store', 'X-Ocean-Obs': 'STALE' },
+                { ..._oceanObsCache.payload, status: 'stale' });
+              return;
+            }
+            sendJson(503, { 'Cache-Control': 'no-store' }, { error: 'Ocean observations are temporarily unavailable' });
+          }
+          return;
+        }
+
+        if (subPath === '/marine' || subPath === '/marine-grid') {
+          const isGrid = subPath === '/marine-grid';
+          const limiter = isGrid ? _oceanGridRateLimiter : _oceanMarineRateLimiter;
+          if (!limiter(clientKey(req))) {
+            sendJson(429, { 'Retry-After': '10' }, { error: 'Rate limit exceeded' });
+            return;
+          }
+          const url = new URL(req.url || '', 'http://localhost');
+          const point = validRegionalPoint(url.searchParams);
+          if (!point) {
+            sendJson(400, {}, { error: 'Valid latitude and longitude are required' });
+            return;
+          }
+          const cache = isGrid ? _oceanGridCache : _oceanMarineCache;
+          const inFlight = isGrid ? _oceanGridInFlight : _oceanMarineInFlight;
+          const cacheMs = isGrid ? OCEAN_GRID_CACHE_MS : OCEAN_MARINE_CACHE_MS;
+          const staleMs = isGrid ? OCEAN_GRID_STALE_MS : OCEAN_MARINE_STALE_MS;
+          const header = isGrid ? 'X-Ocean-Grid' : 'X-Ocean-Marine';
+          // Grid keys use coarser 0.25° cells — nearby drift seeds share forcing.
+          const cell = isGrid ? 4 : 10;
+          const key = `${(Math.round(point.latitude * cell) / cell).toFixed(2)},${(Math.round(point.longitude * cell) / cell).toFixed(2)}`;
+          const now = Date.now();
+          const cached = cache.get(key);
+          if (cached && now - cached.cachedAt <= cacheMs) {
+            sendJson(200, { 'Cache-Control': 'public, max-age=120', [header]: 'HIT' },
+              { ...cached.payload, status: 'cached' });
+            return;
+          }
+          const refresh = isGrid ? refreshGrid : refreshMarine;
+          const request = coalesceProxyRequest(inFlight, key, () => refresh(point, key));
+          try {
+            const payload = await request.promise;
+            sendJson(200, { 'Cache-Control': 'public, max-age=120', [header]: request.shared ? 'INFLIGHT' : 'MISS' }, payload);
+          } catch {
+            if (cached && now - cached.cachedAt <= staleMs) {
+              sendJson(200, { 'Cache-Control': 'no-store', [header]: 'STALE' },
+                { ...cached.payload, status: 'stale' });
+              return;
+            }
+            sendJson(503, { 'Cache-Control': 'no-store' }, { error: 'Marine forecast is temporarily unavailable' });
+          }
+          return;
+        }
+
+        sendJson(404, {}, { error: 'Unknown ocean endpoint' });
+      } catch (err) {
+        console.error('[ocean-proxy]', err?.message || err);
+        sendJson(500, { 'Cache-Control': 'no-store' }, { error: 'ocean proxy error' });
+      }
+    });
+  }
+
+  return {
+    name: 'ocean-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
 function parseJsonEnv(key, fallback) {
   const value = process.env[key];
   if (!value) return fallback;
@@ -7352,6 +7702,7 @@ export default defineConfig(({ mode }) => {
       militaryInstallationsProxy(),
       regionalBriefProxy(),
       weatherEffectsProxy(),
+      oceanProxy(),
       cctvProxy(),
       radioBrowserProxy(),
       gbfsProxy(),
