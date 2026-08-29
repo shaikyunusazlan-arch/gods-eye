@@ -176,6 +176,20 @@ const LAYER_ALIASES = new Map([
   ['firms', 'local-firms'],
   ['fires', 'local-firms'],
   ['active fires', 'local-firms'],
+  ['map overlays', 'osm-overlays'],
+  ['open map overlays', 'osm-overlays'],
+  ['sea marks', 'osm-overlays'],
+  ['seamarks', 'osm-overlays'],
+  ['nautical charts', 'osm-overlays'],
+  ['openseamap', 'osm-overlays'],
+  ['ski pistes', 'osm-overlays'],
+  ['ski slopes', 'osm-overlays'],
+  ['snow map', 'osm-overlays'],
+  ['opensnowmap', 'osm-overlays'],
+  ['rayhunter', 'rayhunter-tap'],
+  ['stingray detector', 'rayhunter-tap'],
+  ['imsi catcher detector', 'rayhunter-tap'],
+  ['cell site simulator detector', 'rayhunter-tap'],
 ]);
 
 const CITY_ALIASES = new Map([
