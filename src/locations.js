@@ -1,5 +1,7 @@
 import * as Cesium from 'cesium';
 import { viewportBias, placesNearViewRecovery } from './annotations/annotationResolver.js';
+import { cachedGroundFloor, warmGroundFloor, resolveGroundFloorCellsBounded } from './data/groundFloor.js';
+import { guardCameraAboveGround } from './cameraGroundGuard.js';
 
 /**
  * Points of Interest per city.
@@ -208,7 +210,21 @@ export function flyToLandmark(viewer, lat, lon, options = {}) {
 
   // Use sampled height if available, otherwise fall back to pre-baked city ground elevation.
   // Google 3D Tiles don't populate globe terrain, so first fly-to always gets the fallback.
-  const terrainHeight = (sampledHeight != null && sampledHeight > 0) ? sampledHeight : groundElevation;
+  //
+  // That fallback used to end at `groundElevation`, which defaults to SEA LEVEL and is only
+  // supplied by the curated CITY_POIS. Every other destination was therefore framed as if it
+  // stood on the ocean surface, putting the camera <local elevation> metres UNDERGROUND. The
+  // app already ships a worldwide ellipsoidal-elevation service in the same datum, so consult
+  // it before assuming zero.
+  const realGround = cachedGroundFloor(lat, lon);
+  const terrainHeight = (sampledHeight != null && sampledHeight > 0)
+    ? sampledHeight
+    : (Number.isFinite(realGround) ? realGround : groundElevation);
+  // Warm the cell so the NEXT arrival nearby is already correct. Browser-only: node
+  // tests must never reach the network (same guard style as meshFloorSampler.js).
+  if (typeof window !== 'undefined') {
+    try { warmGroundFloor([{ lat, lon }]); } catch { /* best-effort prefetch */ }
+  }
 
   const bounds = normalizeBuildingBounds(buildingBounds);
   const targetHeight = bounds ? terrainHeight + bounds.height / 2 : terrainHeight + buildingHeight;
@@ -237,6 +253,10 @@ export function flyToLandmark(viewer, lat, lon, options = {}) {
       complete: () => {
         viewer.camera.lookAt(targetPosition, hpr);
         viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+        // Framing above was computed from a PREDICTED ground height. Now that tiles
+        // have streamed in, measure the real surface and lift if the eye is buried
+        // or pressed against it. This is the only ground truth available.
+        try { guardCameraAboveGround(viewer, { lat, lon }); } catch { /* best-effort */ }
         if (typeof onComplete === 'function') {
           try { onComplete(); } catch { /* no-op */ }
         }
@@ -456,13 +476,21 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     ? await resolveBuildingBounds(lat, lng, query)
     : null;
   const range = requestedRange || defaultRangeForNavigationMode(navigationMode);
+  // Real ground height before framing, for the same reason as the coordinate branch:
+  // a searched place on elevated terrain would otherwise be framed against sea level.
+  // Resolved BEFORE the mayFly() gate so a cancellation still wins the race.
+  const flyLat = buildingBounds?.lat ?? lat;
+  const flyLon = buildingBounds?.lon ?? lng;
+  await resolveGroundFloorCellsBounded([{ lat: flyLat, lon: flyLon }]);
+  const searchGroundElevation = cachedGroundFloor(flyLat, flyLon);
   if (!mayFly()) return CANCELLED_SEARCH;
-  const flight = flyToLandmark(viewer, buildingBounds?.lat ?? lat, buildingBounds?.lon ?? lng, {
+  const flight = flyToLandmark(viewer, flyLat, flyLon, {
     range,
     pitch: buildingPitch(buildingBounds),
     heading: 30,
     buildingHeight: 30,
     buildingBounds,
+    ...(Number.isFinite(searchGroundElevation) ? { groundElevation: searchGroundElevation } : {}),
     duration,
     onStart: options.onStart,
     onComplete: options.onComplete,
