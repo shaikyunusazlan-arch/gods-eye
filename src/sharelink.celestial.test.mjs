@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { ShareLinkManager, decodeShareCreatedAtMs } from './sharelink.js';
-import { createDefaultLayerState } from './data/layerState.js';
+import { LAYER_STATE_REGISTRY, createDefaultLayerState } from './data/layerState.js';
 
 const uiSource = fs.readFileSync(new URL('./ui.js', import.meta.url), 'utf8');
 
@@ -58,11 +58,21 @@ test('share links parse explicit celestial on and off states', () => {
   assert.equal(makeManager('#lat=10&lon=20&cr=0').parseInitialHash().celestialRing, false);
 });
 
+// Derived for the same reason as in data/layerState.test.mjs: a hardcoded
+// 'z' stopped meaning "unknown" the moment a layer claimed 'z' as its token.
+const UNKNOWN_LAYER_TOKEN = (() => {
+  const taken = new Set(LAYER_STATE_REGISTRY.map((entry) => entry.token));
+  const free = 'abcdefghijklmnopqrstuvwxyz'.split('').find((c) => !taken.has(c));
+  if (!free) throw new Error('every single-letter token is registered; widen this fixture');
+  return free;
+})();
+
 test('unknown-only v2 layer tokens are invalid, while historical l fields stay inert', () => {
-  const invalid = makeManager('#v=2&lat=10&lon=20&l=z').parseInitialHash();
+  const z = UNKNOWN_LAYER_TOKEN;
+  const invalid = makeManager(`#v=2&lat=10&lon=20&l=${z}`).parseInitialHash();
   assert.equal(invalid.layerState, null);
   assert.equal(invalid.layerStateInvalid, true);
-  for (const hash of ['#lat=10&lon=20&l=z', '#v=1&lat=10&lon=20&l=z']) {
+  for (const hash of [`#lat=10&lon=20&l=${z}`, `#v=1&lat=10&lon=20&l=${z}`]) {
     const legacy = makeManager(hash).parseInitialHash();
     assert.equal(legacy.layerState, null);
     assert.equal(legacy.layerStateInvalid, false);

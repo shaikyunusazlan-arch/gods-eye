@@ -155,8 +155,8 @@ function encode(state) {
 
 test('production registry is exact, canonical, and rejects incomplete contracts', async () => {
   assert.equal(validateLayerStateRegistry(), true);
-  assert.equal(REGISTERED_LAYER_IDS.length, 16);
-  assert.equal(new Set(REGISTERED_LAYER_IDS).size, 16);
+  assert.equal(REGISTERED_LAYER_IDS.length, 17);
+  assert.equal(new Set(REGISTERED_LAYER_IDS).size, 17);
   assert.deepEqual(REGISTERED_LAYER_IDS, [...REGISTERED_LAYER_IDS].sort());
   assert.throws(
     () => validateLayerStateRegistry([...LAYER_STATE_REGISTRY, LAYER_STATE_REGISTRY[0]]),
@@ -222,9 +222,20 @@ test('v2 codec distinguishes absent from empty and keeps canonical deterministic
   assert.deepEqual(decodeLayerStateParams(new URLSearchParams(encode(first))), first);
 });
 
+// Derived, never hardcoded. This fixture used the literal 'z' until a new layer
+// claimed 'z' as a real token, at which point the test silently stopped testing
+// what it names: an UNKNOWN token. Deriving it means registering a layer can no
+// longer turn this assertion into a tautology.
+const UNKNOWN_LAYER_TOKEN = (() => {
+  const taken = new Set(LAYER_STATE_REGISTRY.map((entry) => entry.token));
+  const free = 'abcdefghijklmnopqrstuvwxyz'.split('').find((c) => !taken.has(c));
+  if (!free) throw new Error('every single-letter token is registered; widen this fixture');
+  return free;
+})();
+
 test('unknown enabled-layer tokens reject the payload instead of becoming an empty set', () => {
-  assert.equal(decodeLayerStateParams(new URLSearchParams('v=2&l=z')), null);
-  assert.equal(decodeLayerStateParams(new URLSearchParams('v=2&l=c.z')), null);
+  assert.equal(decodeLayerStateParams(new URLSearchParams(`v=2&l=${UNKNOWN_LAYER_TOKEN}`)), null);
+  assert.equal(decodeLayerStateParams(new URLSearchParams(`v=2&l=c.${UNKNOWN_LAYER_TOKEN}`)), null);
 });
 
 test('unknown and forbidden option fields are ignored while missing options use codec defaults', () => {
