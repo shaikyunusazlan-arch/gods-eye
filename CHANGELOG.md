@@ -3,6 +3,22 @@
 This changelog records public product changes. For the authoritative description
 of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
 
+## [Unreleased] — 2026-08-28
+
+### Added
+
+- Added the Ocean Conditions layer: ~900 NOAA NDBC buoy stations from one
+  server-cached bulk feed, color-banded by significant wave height, with
+  sparse observation cards, Open-Meteo Marine forecast lines (`FC`-labeled),
+  ocean-point forecast cards, analyst-query coverage, voice aliases
+  ("buoys", "sea state", "waves"), and share token `o`.
+- Added a person-overboard drift Monte Carlo MVP: USCG PIW-1 leeway
+  coefficients (Allen & Plourde 1999 / Allen 2005; Breivik & Allen 2008
+  formulation), 10⁴-particle ensembles run in a worker over a 5×5
+  Open-Meteo forecast grid, rendered as a scrubbable particle cloud labeled
+  `SIMULATED DRIFT ENSEMBLE — NOT A SAR PRODUCT`, started from a `▶ DRIFT`
+  chip on buoy and ocean-point cards.
+
 ## [Unreleased] — 2026-08-24
 
 ### Added
