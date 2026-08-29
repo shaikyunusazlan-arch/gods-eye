@@ -1,0 +1,4 @@
+
+# Normalize line endings so working-tree bytes match index on Windows (core.autocrlf=true).
+# Fixes #88: 'reasonable Defaults' test fails on Windows CRLF checkouts.
+* text=auto eol=lf
