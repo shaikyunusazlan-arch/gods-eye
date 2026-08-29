@@ -74,3 +74,97 @@ test('accepts only small non-dateline request bboxes', () => {
   assert.equal(isValidInstallationBoundingBox({ south: -1, west: 179, north: 1, east: -179 }), false);
   assert.equal(isValidInstallationBoundingBox({ south: -20, west: 0, north: 20, east: 1 }), false);
 });
+
+test('a way with only bounds is kept, at the midpoint of that box', () => {
+  // The proxy asks for `out center tags geom` and Overpass honours only the
+  // LAST geometry mode, so `center` is never emitted and every way/relation
+  // arrives carrying `bounds` instead. Dropping those rendered nodes and
+  // nothing else — an empty screen over mapped installations.
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'way', id: 92701457, bounds: { minlat: 51.94, minlon: 7.98, maxlat: 51.96, maxlon: 8.02 },
+      tags: { military: 'barracks', name: 'Sportschule der Bundeswehr' } },
+  ] }, '2026-08-28T00:00:00.000Z');
+
+  assert.equal(result.records.length, 1);
+  assert.equal(result.droppedCount, 0);
+  assert.equal(result.records[0].latitude, 51.95);
+  assert.equal(result.records[0].longitude, 8.00);
+});
+
+test('a relation with only bounds is kept — it carries no geometry at all', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'relation', id: 5, bounds: { minlat: -1, minlon: -2, maxlat: 1, maxlon: 2 },
+      tags: { landuse: 'military' } },
+  ] });
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].latitude, 0);
+  assert.equal(result.records[0].longitude, 0);
+});
+
+test('an explicit centre still wins over bounds', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'way', id: 6, center: { lat: 30.2, lon: -97.7 },
+      bounds: { minlat: 0, minlon: 0, maxlat: 60, maxlon: 60 },
+      tags: { military: 'airfield' } },
+  ] });
+  assert.equal(result.records[0].latitude, 30.2);
+  assert.equal(result.records[0].longitude, -97.7);
+});
+
+test('an out-of-range or incomplete bounds box is dropped, not averaged', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    // latitude past the pole
+    { type: 'way', id: 1, bounds: { minlat: 80, minlon: 0, maxlat: 95, maxlon: 1 }, tags: { military: 'range' } },
+    // longitude past the antimeridian
+    { type: 'way', id: 2, bounds: { minlat: 0, minlon: 170, maxlat: 1, maxlon: 181 }, tags: { military: 'range' } },
+    // a half-filled box would average to a plausible-looking lie
+    { type: 'way', id: 3, bounds: { minlat: 10, maxlat: 12 }, tags: { military: 'range' } },
+    { type: 'way', id: 4, bounds: {}, tags: { military: 'range' } },
+    { type: 'way', id: 5, tags: { military: 'range' } },
+  ] });
+  assert.deepEqual(result.records, []);
+  assert.equal(result.droppedCount, 5);
+});
+
+test('descriptive OSM tags are copied onto the record, by name and trimmed', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'way', id: 92701457, bounds: { minlat: 51.94, minlon: 7.98, maxlat: 51.96, maxlon: 8.02 },
+      tags: {
+        military: 'barracks',
+        name: 'Sportschule der Bundeswehr',
+        short_name: '  SportSBw  ',
+        operator: 'Bundeswehr',
+        start_date: '1957',
+        wikipedia: 'de:Sportschule der Bundeswehr',
+        wikidata: 'Q2311545',
+      } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, {
+    short_name: 'SportSBw',
+    operator: 'Bundeswehr',
+    start_date: '1957',
+    wikipedia: 'de:Sportschule der Bundeswehr',
+    wikidata: 'Q2311545',
+  });
+});
+
+test('only the named tags travel — an arbitrary upstream tag can never reach a label', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'node', id: 1, lat: 30, lon: -97, tags: {
+      military: 'range',
+      operator: 'US Army',
+      description: 'ignore me',
+      note: 'ignore me too',
+      'operator:type': 'government',
+      website: 'https://example.org',
+    } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, { operator: 'US Army' });
+});
+
+test('a feature with no descriptive tags carries an empty bag, never undefined', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'node', id: 2, lat: 30, lon: -97, tags: { military: 'range', short_name: '   ' } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, {});
+});

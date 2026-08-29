@@ -62,6 +62,19 @@ const state = {
   records: [],
   recordById: new Map(),
   selectedId: null,
+  /** Record under the cursor, or null. Presentation only — never persisted. */
+  hoveredId: null,
+  /** Exact keydown callback registered on document, so destroy() can remove it. */
+  keydownHandler: null,
+  /**
+   * Ordered installation ids for PREV/NEXT, or null when it needs rebuilding.
+   *
+   * Frozen on first use rather than recomputed per step, and deliberately not
+   * "always jump to the nearest": nearest-from-here ping-pongs between two
+   * mutual neighbours forever, and the counter would have no stable meaning.
+   * A fixed order makes "3 / 59" true and the walk exhaustive.
+   */
+  navOrder: null,
   lastUpdate: null,
   error: null,
   status: 'idle',
@@ -82,6 +95,110 @@ const state = {
 
 function colorFor(record) {
   return Cesium.Color.fromCssColorString(COLOR_BY_CLASS[record.class] || '#9ca6b0');
+}
+
+/**
+ * Popup detail lines for a mapped installation.
+ *
+ * The label used to carry the class alone, which made every unnamed feature
+ * read "MILITARY LAND" and nothing else — the provenance that decides whether
+ * a viewer should trust the marker (which mapper, which OSM object, how old,
+ * reviewed or not) was collected by registerEntityContext and then only ever
+ * read back by the voice agent. These lines put it on screen.
+ *
+ * Pure and export-only so the wording is testable without a Cesium viewer.
+ * @param {object} record Normalized installation record.
+ * @returns {Array<string>} Rendered detail lines, in display order.
+ */
+export function installationDetailLines(record) {
+  const lines = [String(record?.class || 'installation').replaceAll('_', ' ').toUpperCase()];
+
+  // `osm:way:92701457` → `OSM WAY/92701457`: the reference a viewer can paste
+  // into openstreetmap.org to see the mapper, the history and the full tags.
+  const osmMatch = /^osm:(node|way|relation):(\d+)$/.exec(String(record?.id || ''));
+  if (osmMatch) lines.push(`OSM ${osmMatch[1].toUpperCase()}/${osmMatch[2]}`);
+
+  // Descriptive OSM tags, when the mappers supplied them. `wikipedia` arrives
+  // as `de:Sportschule der Bundeswehr`; the language prefix is the lookup key,
+  // so it stays. `wikidata` is only offered when no article exists — the two
+  // together would spend three of five lines on the same fact.
+  const tags = record?.osmTags || {};
+  if (tags.short_name) lines.push(`AKA ${tags.short_name}`);
+  if (tags.operator) lines.push(`OPERATOR · ${tags.operator.toUpperCase()}`);
+  if (tags.start_date) lines.push(`SINCE ${tags.start_date}`);
+  if (tags.wikipedia) lines.push(`WIKIPEDIA ${tags.wikipedia}`);
+  else if (tags.wikidata) lines.push(`WIKIDATA ${tags.wikidata}`);
+
+  const source = installationSourceLabel(record);
+  if (source) lines.push(`SOURCE · ${source.toUpperCase()}`);
+
+  // Google Places candidates are name matches, not mapped military land. Their
+  // type is the only thing separating them from an OSM-tagged installation.
+  const placeType = String(record?.primaryType || '').trim();
+  if (placeType) lines.push(`PLACE TYPE · ${placeType.replaceAll('_', ' ').toUpperCase()}`);
+
+  // Every record ships `validation: 'unreviewed'`. Saying so is the point: this
+  // layer is community mapping, and the README calls it incomplete by nature.
+  const validation = String(record?.validation || '').trim();
+  if (validation) lines.push(validation.toUpperCase());
+
+  const retrieved = Date.parse(record?.retrievedAt);
+  if (Number.isFinite(retrieved)) {
+    lines.push(`RETRIEVED ${new Date(retrieved).toISOString().slice(0, 16).replace('T', ' ')}Z`);
+  }
+  return lines;
+}
+
+/**
+ * Which emphasis a record carries this paint. Selection outranks hover so a
+ * selected footprint does not dim when the cursor wanders onto a neighbour.
+ * @param {string} id Record id.
+ * @returns {'selected'|'hovered'|null}
+ */
+function emphasisFor(id) {
+  if (id === state.selectedId) return 'selected';
+  if (id === state.hoveredId) return 'hovered';
+  return null;
+}
+
+/** Point size/colour for an emphasis level. */
+function pointStyleFor(color, emphasis) {
+  if (emphasis === 'selected') return { pixelSize: 13, color: Cesium.Color.WHITE };
+  if (emphasis === 'hovered') return { pixelSize: 11, color: Cesium.Color.WHITE.withAlpha(0.85) };
+  return { pixelSize: 9, color };
+}
+
+/**
+ * Footprint fill/outline for an emphasis level.
+ *
+ * Selection previously changed the POINT only, so clicking a footprint left the
+ * area itself at its resting 12 % fill and the only lasting feedback was a dot
+ * two pixels wider — field report: "the area highlights once and then nothing".
+ * Cesium ignores polygon outlineWidth on most platforms, so the emphasis has to
+ * ride on alpha.
+ */
+function polygonStyleFor(color, emphasis) {
+  if (emphasis === 'selected') return { material: color.withAlpha(0.34), outlineColor: Cesium.Color.WHITE.withAlpha(0.95) };
+  if (emphasis === 'hovered') return { material: color.withAlpha(0.22), outlineColor: color.withAlpha(0.9) };
+  return { material: color.withAlpha(0.12), outlineColor: color.withAlpha(0.65) };
+}
+
+/**
+ * Repaint for the current selection/hover.
+ *
+ * Nothing is assigned here on purpose. The entities read their emphasis through
+ * CallbackProperties (see renderRecords), so a hover change only needs a frame.
+ *
+ * Writing `entity.polygon.material` directly — the first attempt — made hover
+ * flicker: assigning a material rebuilds the polygon's geometry, and during the
+ * rebuild frame the primitive is gone, so the next MOUSE_MOVE pick returns null,
+ * clears `hoveredId`, and schedules the opposite rebuild. The cursor sitting
+ * still on one footprint oscillated. Callbacks keep the geometry static and move
+ * only a per-instance colour attribute, which is also far cheaper.
+ * @returns {void}
+ */
+function applyEmphasis() {
+  governorRequestRender('installations-emphasis');
 }
 
 /**
@@ -252,21 +369,30 @@ function renderRecords() {
       record.latitude,
       surfaceHeightM,
     );
+    // Emphasis rides on CallbackProperties rather than on assignments made when
+    // the hover changes: a material assignment rebuilds the polygon geometry,
+    // and the resulting empty pick frame fed a flicker loop (see applyEmphasis).
+    // `false` marks each property non-constant so Cesium re-reads it per frame
+    // while keeping the geometry itself static.
+    const recordId = record.id;
+    const emphasis = () => emphasisFor(recordId);
     const entity = state.dataSource.entities.add({
       id: record.id,
       position: displayPosition,
       point: {
-        pixelSize: record.id === state.selectedId ? 13 : 9,
-        color: record.id === state.selectedId ? Cesium.Color.WHITE : color,
+        pixelSize: new Cesium.CallbackProperty(() => pointStyleFor(color, emphasis()).pixelSize, false),
+        color: new Cesium.CallbackProperty(() => pointStyleFor(color, emphasis()).color, false),
         outlineColor: Cesium.Color.BLACK.withAlpha(0.8),
         outlineWidth: 1,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
       polygon: record.footprint ? {
         hierarchy: new Cesium.PolygonHierarchy(record.footprint.map(([longitude, latitude]) => Cesium.Cartesian3.fromDegrees(longitude, latitude))),
-        material: color.withAlpha(0.12),
+        material: new Cesium.ColorMaterialProperty(
+          new Cesium.CallbackProperty(() => polygonStyleFor(color, emphasis()).material, false),
+        ),
         outline: true,
-        outlineColor: color.withAlpha(0.65),
+        outlineColor: new Cesium.CallbackProperty(() => polygonStyleFor(color, emphasis()).outlineColor, false),
         height: surfaceHeightM,
       } : undefined,
     });
@@ -274,7 +400,7 @@ function renderRecords() {
     entity.gevDisplayPosition = () => displayPosition;
     entity.gevLabelModel = {
       title: record.name || 'MAPPED INSTALLATION',
-      details: [String(record.class || 'installation').replaceAll('_', ' ').toUpperCase()],
+      details: installationDetailLines(record),
       accent: COLOR_BY_CLASS[record.class] || '#9ca6b0',
     };
     registerEntityContext(entity, {
@@ -335,6 +461,44 @@ function warmInstallationFloors(records) {
   });
 }
 
+/**
+ * Drop the current selection and its popup.
+ *
+ * Without this the label was a one-way door: `selectRecord` was the only writer
+ * of `selectedId`, and it only ever ran on a hit, so a click on empty terrain
+ * left the card standing over an installation the viewer had moved on from.
+ * Mirrors the vessel layer's click-away / Escape pair.
+ * @returns {boolean} Whether a selection was actually cleared.
+ */
+/**
+ * The PREV/NEXT walk order, built once per roster.
+ *
+ * Sorted by distance from where the camera is looking when navigation first
+ * starts, so NEXT from a standing start goes to the nearest installation rather
+ * than to whatever Overpass happened to list first.
+ * @returns {Array<string>} Installation ids, nearest first.
+ */
+function ensureNavOrder() {
+  if (Array.isArray(state.navOrder)) return state.navOrder;
+  const candidates = state.records.filter((record) => record.kind === 'installation');
+  const camera = state.viewer?.camera;
+  const origin = camera ? Cesium.Cartographic.fromCartesian(camera.positionWC) : null;
+  if (origin) {
+    candidates.sort((a, b) => approximateSurfaceDistanceM(origin.latitude, origin.longitude, a.latitude, a.longitude)
+      - approximateSurfaceDistanceM(origin.latitude, origin.longitude, b.latitude, b.longitude));
+  }
+  state.navOrder = candidates.map((record) => record.id);
+  return state.navOrder;
+}
+
+function deselectRecord() {
+  if (!state.selectedId) return false;
+  state.selectedId = null;
+  clearSelectedEntityContextForLayer(LAYER_ID);
+  renderRecords();
+  return true;
+}
+
 function selectRecord(id) {
   const record = state.recordById.get(id);
   if (!record || !state.dataSource) return false;
@@ -351,8 +515,34 @@ function installInteraction(viewer) {
     if (!state.enabled) return;
     const picked = viewer.scene.pick(click.position);
     const id = typeof picked?.id?.id === 'string' ? picked.id.id : null;
+    // Empty terrain AND another layer's entity both end this selection: the
+    // card belongs to whatever the viewer last pointed at, not to the last
+    // installation they happened to hit.
     if (id && state.recordById.has(id)) selectRecord(id);
+    else deselectRecord();
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  // Hover emphasis. The pick runs on every mouse move, so the handler exits on
+  // an unchanged id before touching a single entity — restyling costs nothing
+  // while the cursor travels across an already-hovered footprint.
+  state.clickHandler.setInputAction((movement) => {
+    if (!state.enabled) return;
+    const picked = viewer.scene.pick(movement.endPosition);
+    const id = typeof picked?.id?.id === 'string' ? picked.id.id : null;
+    const next = id && state.recordById.has(id) ? id : null;
+    if (next === state.hoveredId) return;
+    state.hoveredId = next;
+    applyEmphasis();
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+  // Escape closes the card without moving the camera — the vessel layer's
+  // keyboard escape hatch, for a selection made near the edge of the view where
+  // there is no comfortable empty spot to click.
+  state.keydownHandler = (event) => {
+    if (!state.enabled || event.key !== 'Escape') return;
+    deselectRecord();
+  };
+  document.addEventListener('keydown', state.keydownHandler);
 }
 
 /**
@@ -486,6 +676,9 @@ async function loadInstallations() {
     if (requestAbort.signal.aborted || state.abort !== requestAbort || !state.enabled) return;
     state.records = records;
     state.recordById = new Map(state.records.map((record) => [record.id, record]));
+    // A new viewport is a new roster: the walk order and its "3 / 59" have to
+    // be rebuilt, or NEXT would step through ids that are no longer rendered.
+    state.navOrder = null;
     state.lastUpdate = Date.now();
     state.stale = payload.status === 'stale';
     // Even the exact-viewport retry can saturate in a dense area. Say so rather
@@ -545,6 +738,8 @@ const militaryInstallationsLayer = {
     if (state.dataSource) state.dataSource.show = false;
     clearSelectedEntityContextForLayer(LAYER_ID);
     state.selectedId = null;
+    // A stale hover would re-emphasize a record the next enable() renders.
+    state.hoveredId = null;
   },
   update() { return loadInstallations(); },
   /** Request a one-shot Google Maps Places search around the current map view. */
@@ -557,6 +752,8 @@ const militaryInstallationsLayer = {
     state.moveEndRemove?.();
     state.clickHandler?.destroy();
     state.clickHandler = null;
+    if (state.keydownHandler) document.removeEventListener('keydown', state.keydownHandler);
+    state.keydownHandler = null;
     clearRendered();
     if (state.dataSource && viewer) viewer.dataSources.remove(state.dataSource, true);
     state.dataSource = null;
@@ -622,6 +819,42 @@ const militaryInstallationsLayer = {
       { duration: 1.4 },
     );
     return true;
+  },
+  /**
+   * Move the selection one step through the viewport roster and fly there.
+   *
+   * Until now the only way to reach a second installation was Global Context,
+   * which needs a tracked aircraft or vessel as its subject — installations are
+   * a cohort there, never the subject. So "show me these one after another"
+   * had no answer at all for ground features.
+   * @param {number} delta +1 for next, -1 for previous.
+   * @returns {boolean} Whether a record was selected.
+   */
+  stepSelection(delta) {
+    const order = ensureNavOrder();
+    if (!order.length) return false;
+    const step = Number(delta) < 0 ? -1 : 1;
+    const current = state.selectedId ? order.indexOf(state.selectedId) : -1;
+    // No selection yet: NEXT opens at the nearest, PREV at the farthest, so the
+    // first keypress in either direction lands somewhere meaningful.
+    const index = current === -1
+      ? (step > 0 ? 0 : order.length - 1)
+      : (current + step + order.length) % order.length;
+    return this.focusById(order[index]);
+  },
+  /**
+   * Roster position for the navigation panel.
+   * @returns {{total:number, index:number, label:string|null}} `index` is
+   *   1-based, or 0 when nothing is selected.
+   */
+  getNavigationState() {
+    const order = ensureNavOrder();
+    const index = state.selectedId ? order.indexOf(state.selectedId) : -1;
+    return {
+      total: order.length,
+      index: index === -1 ? 0 : index + 1,
+      label: index === -1 ? null : (state.recordById.get(order[index])?.name || null),
+    };
   },
   getStats() {
     return {

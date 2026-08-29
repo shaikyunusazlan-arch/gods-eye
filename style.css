@@ -9161,3 +9161,119 @@ body.scene-playback-mode #first-run-launcher {
   /* Scrolling a tile into view must not animate either. */
   .first-run-choices { scroll-behavior: auto; }
 }
+
+/* ── Mapped Installations walk ─────────────────────────────────────────────
+   Composed into #right-context-rail at runtime beside CCTV and CONTEXT (see
+   _initRightPanelAdaptiveLayout) — the markup lives in the left stack only
+   because that is where a plain block is authored. Rail panels collapse to a
+   narrow tab with a ◀/▶ toggle rather than the left stack's +/−. */
+#right-context-rail > #installations-nav {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+  z-index: auto;
+  width: 100%;
+  flex: 0 0 auto;
+  min-height: 0;
+  /* The rail is click-through; each panel re-arms its own hit area. Omitting
+     this let clicks fall past PREV/NEXT onto the globe while the keyboard
+     bindings still worked. */
+  pointer-events: auto;
+}
+
+#right-context-rail > #installations-nav.collapsed {
+  width: var(--right-context-collapsed-width);
+  margin-left: auto;
+}
+
+.installations-nav-inner {
+  padding: 14px 16px 12px;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--panel-radius);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, .5),
+    0 0 0 1px rgba(255, 255, 255, .03) inset;
+}
+
+#installations-nav.collapsed .installations-nav-body {
+  display: none;
+}
+
+/* Matches the collapsed tab height its rail siblings agree on. */
+#installations-nav.collapsed .installations-nav-inner {
+  height: 50px;
+  min-height: 50px;
+  box-sizing: border-box;
+  padding-bottom: 10px;
+}
+
+#installations-nav.collapsed .panel-header {
+  margin-bottom: 2px;
+}
+
+#installations-nav.collapsed .panel-title {
+  font-size: 8px;
+  letter-spacing: 1.8px;
+}
+
+.installations-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.installations-nav-row button {
+  min-width: 34px;
+  min-height: 26px;
+  border: 1px solid rgba(65, 220, 231, .28);
+  border-radius: 5px;
+  color: #8feaf2;
+  background: rgba(14, 69, 78, .14);
+  font: 10px/1 var(--font-mono);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.installations-nav-row button:hover:not(:disabled),
+.installations-nav-row button:focus-visible:not(:disabled) {
+  border-color: #65f7ff;
+  color: #fff;
+}
+
+.installations-nav-row button:disabled {
+  opacity: .35;
+  cursor: default;
+}
+
+#installations-nav-count {
+  flex: 1;
+  text-align: center;
+  color: #cfeff3;
+  font: 11px/1 var(--font-mono);
+  letter-spacing: .08em;
+}
+
+.installations-nav-label {
+  display: block;
+  margin-top: 8px;
+  color: rgba(207, 239, 243, .62);
+  font: 9px/1.3 var(--font-mono);
+  letter-spacing: .06em;
+  /* One line, ellipsised: "Sportschule der Bundeswehr" must not reflow the
+     rail and shove CONTEXT down on every step. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.ui-clean-view #installations-nav,
+body.recording-mode #installations-nav {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}

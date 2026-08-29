@@ -51,10 +51,51 @@ function finiteLongitude(value) {
   return Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
+/**
+ * OSM tags worth showing, in display order. Everything else is dropped: these
+ * are descriptive keys with stable meanings, not operational claims.
+ * @type {ReadonlyArray<string>}
+ */
+const DESCRIPTIVE_TAGS = Object.freeze(['short_name', 'operator', 'start_date', 'wikipedia', 'wikidata']);
+
+/**
+ * Copy the descriptive OSM tags off an element, trimmed and string-typed.
+ * @param {Object<string, unknown>} tags Raw OSM tags.
+ * @returns {Object<string, string>} Present tags only; empty when none apply.
+ */
+function pickDescriptiveTags(tags) {
+  const picked = {};
+  for (const key of DESCRIPTIVE_TAGS) {
+    const value = String(tags?.[key] ?? '').trim();
+    if (value) picked[key] = value;
+  }
+  return picked;
+}
+
 function pointFrom(element) {
   const lat = Number(element?.lat ?? element?.center?.lat);
   const longitude = Number(element?.lon ?? element?.center?.lon);
-  return finiteLatitude(lat) && finiteLongitude(longitude) ? { latitude: lat, longitude } : null;
+  if (finiteLatitude(lat) && finiteLongitude(longitude)) return { latitude: lat, longitude };
+
+  // Bounds midpoint fallback (field test 2026-08-28, Warendorf: nothing drawn).
+  // The proxy asks for `out center tags geom`, but Overpass takes the LAST
+  // geometry mode only — `geom` wins and no `center` is ever emitted. Every
+  // way and relation therefore arrived point-less and was dropped here, so the
+  // layer rendered nodes and nothing else (San Diego: 149 of 228 kept, all the
+  // ways and relations gone; Warendorf has no nodes at all, hence an empty
+  // screen over a mapped Bundeswehr barracks). `bounds` accompanies exactly
+  // those elements — including relations, which carry no `geometry` — so it
+  // recovers all of them without touching the query or the footprint path.
+  const bounds = element?.bounds;
+  const south = Number(bounds?.minlat);
+  const west = Number(bounds?.minlon);
+  const north = Number(bounds?.maxlat);
+  const east = Number(bounds?.maxlon);
+  if (finiteLatitude(south) && finiteLatitude(north)
+      && finiteLongitude(west) && finiteLongitude(east)) {
+    return { latitude: (south + north) / 2, longitude: (west + east) / 2 };
+  }
+  return null;
 }
 
 function footprintFrom(element) {
@@ -104,6 +145,13 @@ export function normalizeMilitaryInstallations(payload, retrievedAt = new Date()
       osmType: type,
       class: klass,
       name: String(tags.name || tags['name:en'] || '').trim() || humanizeInstallationClass(klass),
+      // A curated slice of the OSM tags, not the whole bag: mappers put real
+      // description on these keys (the Warendorf barracks carry short_name
+      // SportSBw, start_date 1957 and a Wikipedia article), and dropping every
+      // tag left the popup unable to say anything a viewer could not already
+      // see. Copied by name so an arbitrary upstream tag can never reach the
+      // label, and trimmed to strings so the renderer needs no type checks.
+      osmTags: pickDescriptiveTags(tags),
       ...point,
       footprint: footprintFrom(element),
       sources: [{ name: 'OpenStreetMap', id: `${type}/${osmId}`, retrievedAt }],

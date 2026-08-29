@@ -205,6 +205,7 @@ const SHARE_PANEL_STATE_SPECS = Object.freeze([
   { id: 'control-panel', pinnable: true },
   { id: 'location-bar', pinnable: true },
   { id: 'data-panel' },
+  { id: 'installations-nav' },
   { id: 'cctv-panel' },
   { id: 'radio-panel' },
   { id: 'scene-panel' },
@@ -215,6 +216,7 @@ const SHARE_PANEL_STATE_SPECS = Object.freeze([
 /** Standard map-view panels cleared out of the way on a fresh Cockpit entry. */
 const COCKPIT_ENTRY_COLLAPSE_PANEL_IDS = Object.freeze([
   'data-panel',
+  'installations-nav',
   'cctv-panel',
   'scene-panel',
   'pp-toggles',
@@ -2258,6 +2260,11 @@ export class StyleManager {
     this._cleanViewBtn = document.getElementById('clean-view-toggle');
     this._cleanViewExitBtn = document.getElementById('clean-view-exit');
     this._dataPanel = document.getElementById('data-panel');
+    this._installationsNav = document.getElementById('installations-nav');
+    this._installationsPrevBtn = document.getElementById('installations-prev-btn');
+    this._installationsNextBtn = document.getElementById('installations-next-btn');
+    this._installationsNavCount = document.getElementById('installations-nav-count');
+    this._installationsNavLabel = document.getElementById('installations-nav-label');
     this._scenePanel = document.getElementById('scene-panel');
     this._cctvPanel = document.getElementById('cctv-panel');
     this._radioPanel = document.getElementById('radio-panel');
@@ -3357,6 +3364,12 @@ export class StyleManager {
         this._updateHudButtonState();
         this._syncShareState();
       }
+      // Installation walk, on the media-player step convention. Guarded on the
+      // layer being enabled so the keys stay free for other bindings whenever
+      // Mapped Installations is off. Matched raw, not lower-cased: these are
+      // punctuation, and both sit unshifted on QWERTY and QWERTZ alike.
+      if (e.key === '.') this._stepInstallation(1);
+      if (e.key === ',') this._stepInstallation(-1);
       if (e.key.toLowerCase() === 'o') this._toggleOrbit();
       if (e.key.toLowerCase() === 'v') this.toggleCleanView();
       if (e.key.toLowerCase() === 'f') {
@@ -3466,6 +3479,14 @@ export class StyleManager {
       });
     }
 
+    this._installationsPrevBtn?.addEventListener('click', () => this._stepInstallation(-1));
+    this._installationsNextBtn?.addEventListener('click', () => this._stepInstallation(1));
+    // The roster is viewport-driven and the selection can also change by a
+    // direct click on a marker, so poll rather than chase every writer. One
+    // read of two integers per second is cheaper than the wiring would be.
+    this._installationsNavTimer = setInterval(() => this._updateInstallationsNav(), 1000);
+    this._updateInstallationsNav();
+
     if (this._celestialBtn) {
       this._celestialBtn.addEventListener('click', () => {
         const ringIsVisible = !!this.celestialRing?.visible;
@@ -3476,6 +3497,52 @@ export class StyleManager {
         }
       });
     }
+  }
+
+  /**
+   * Step the Mapped Installations selection and repaint the walk strip.
+   *
+   * Silently ignored while the layer is off, so the key stays free rather than
+   * appearing broken.
+   * @param {number} delta +1 next, -1 previous.
+   * @returns {void}
+   */
+  _stepInstallation(delta) {
+    if (!this._dataManager?.isEnabled?.('military-installations')) return;
+    militaryInstallationsLayer.stepSelection?.(delta);
+    this._updateInstallationsNav();
+  }
+
+  /**
+   * Show, hide and repaint the installation walk strip.
+   *
+   * Called on every data-layer change and after each step. The roster is
+   * viewport-driven, so the counter has to survive a camera move that swapped
+   * the whole list underneath a standing selection.
+   * @returns {void}
+   */
+  _updateInstallationsNav() {
+    if (!this._installationsNav) return;
+    const enabled = Boolean(this._dataManager?.isEnabled?.('military-installations'));
+    this._installationsNav.hidden = !enabled;
+    if (!enabled) return;
+
+    const nav = militaryInstallationsLayer.getNavigationState?.() || { total: 0, index: 0, label: null };
+    const empty = nav.total === 0;
+    if (this._installationsNavCount) {
+      this._installationsNavCount.textContent = empty
+        ? '— / —'
+        : `${nav.index || '—'} / ${nav.total}`;
+    }
+    if (this._installationsNavLabel) {
+      // An empty roster and an unselected one are different states, and the
+      // remedy differs too: zoom in versus press NEXT.
+      this._installationsNavLabel.textContent = empty
+        ? 'NONE IN VIEW — ZOOM IN'
+        : (nav.label || 'NOTHING SELECTED').toUpperCase();
+    }
+    if (this._installationsPrevBtn) this._installationsPrevBtn.disabled = empty;
+    if (this._installationsNextBtn) this._installationsNextBtn.disabled = empty;
   }
 
   /**
@@ -6764,6 +6831,13 @@ export class StyleManager {
       stack.insertBefore(this._cctvPanel, globalContextPanel);
       this._syncPanelCollapseButton(this._cctvPanel);
     }
+    // The installation walk is a per-layer control like CCTV, so it belongs to
+    // the same rail — authored in the left stack only because that is where the
+    // markup for a plain block sits; the rail is composed at runtime.
+    if (this._installationsNav) {
+      stack.insertBefore(this._installationsNav, globalContextPanel);
+      this._syncPanelCollapseButton(this._installationsNav);
+    }
     if (this._sliderPanel) {
       this._sliderPanel.style.removeProperty('top');
       this._sliderPanel.style.removeProperty('right');
@@ -7397,7 +7471,7 @@ export class StyleManager {
    * @returns {void}
    */
   _syncPanelCollapseButton(panelEl) {
-    const isRightRail = ['pp-toggles', 'cctv-panel', 'global-context-panel'].includes(panelEl?.id);
+    const isRightRail = ['pp-toggles', 'cctv-panel', 'global-context-panel', 'installations-nav'].includes(panelEl?.id);
     const collapsed = panelEl.classList.contains('collapsed');
     panelEl.querySelectorAll('.panel-collapse-btn[data-collapse-target]').forEach((btn) => {
       const owner = btn.closest('[data-panel-id], #param-slider-panel');
@@ -10231,6 +10305,10 @@ export class StyleManager {
     if (this._loadingFeedbackTicker) {
       clearInterval(this._loadingFeedbackTicker);
       this._loadingFeedbackTicker = null;
+    }
+    if (this._installationsNavTimer) {
+      clearInterval(this._installationsNavTimer);
+      this._installationsNavTimer = null;
     }
     if (this._leftStackLayoutFrame !== null) {
       cancelAnimationFrame(this._leftStackLayoutFrame);
