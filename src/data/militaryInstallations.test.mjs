@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   approximateSurfaceDistanceM,
   classifyGoogleMilitaryPlace,
+  installationDetailLines,
   installationSourceLabel,
   installationResponseSaturated,
   installationSurfaceHeightM,
@@ -742,4 +743,203 @@ test('the retry is wired to every lifecycle edge, not just declared', () => {
   assert.match(installationsSource,
     /state\.enabled && !state\.loading\) loadInstallations\(\)/,
     'the fired retry re-checks enablement and never races an in-flight load');
+});
+
+// ---------------------------------------------------------------------------
+// installationDetailLines — what the popup is allowed to claim
+// ---------------------------------------------------------------------------
+
+test('the popup names the OSM object a viewer can go and check', () => {
+  const lines = installationDetailLines({
+    id: 'osm:way:92701457',
+    class: 'barracks',
+    validation: 'unreviewed',
+    sources: [{ name: 'OpenStreetMap' }],
+    osmTags: { short_name: 'SportSBw', operator: 'Bundeswehr', start_date: '1957' },
+    retrievedAt: '2026-08-28T21:07:00.000Z',
+  });
+  assert.equal(lines[0], 'BARRACKS');
+  // Pasteable into openstreetmap.org — the mapper, the history, the full tags.
+  assert.ok(lines.includes('OSM WAY/92701457'));
+  assert.ok(lines.includes('AKA SportSBw'));
+  assert.ok(lines.includes('OPERATOR · BUNDESWEHR'));
+  assert.ok(lines.includes('SINCE 1957'));
+  assert.ok(lines.includes('UNREVIEWED'), 'community mapping must say so');
+  assert.ok(lines.includes('RETRIEVED 2026-08-28 21:07Z'));
+});
+
+test('an unnamed feature says more than just its class', () => {
+  // The whole point: before this, every unnamed feature read "MILITARY LAND".
+  const lines = installationDetailLines({
+    id: 'osm:node:5', class: 'military_land', validation: 'unreviewed',
+    sources: [{ name: 'OpenStreetMap' }], osmTags: {},
+  });
+  assert.equal(lines[0], 'MILITARY LAND');
+  assert.ok(lines.length > 1);
+  assert.ok(lines.includes('OSM NODE/5'));
+});
+
+test('wikipedia wins over wikidata — the two together waste a line on one fact', () => {
+  const both = installationDetailLines({
+    id: 'osm:node:1', class: 'range', osmTags: { wikipedia: 'de:Foo', wikidata: 'Q1' },
+  });
+  assert.ok(both.includes('WIKIPEDIA de:Foo'));
+  assert.ok(!both.some((l) => l.startsWith('WIKIDATA')));
+
+  const only = installationDetailLines({
+    id: 'osm:node:1', class: 'range', osmTags: { wikidata: 'Q1' },
+  });
+  assert.ok(only.includes('WIKIDATA Q1'));
+});
+
+test('a Places candidate is marked as one, not passed off as mapped military land', () => {
+  const lines = installationDetailLines({
+    id: 'places:abc', class: 'installation', primaryType: 'military_base',
+    sources: [{ name: 'Google Places' }],
+  });
+  assert.ok(lines.includes('PLACE TYPE · MILITARY BASE'));
+  assert.ok(!lines.some((l) => l.startsWith('OSM ')));
+});
+
+test('missing fields are omitted, never rendered as empty or undefined', () => {
+  // An absent source is stated, not skipped — silence would read as vouched-for.
+  assert.deepEqual(installationDetailLines({ class: 'range' }),
+    ['RANGE', 'SOURCE · UNKNOWN MAPPED SOURCE']);
+  for (const record of [{}, null, undefined, { osmTags: null }]) {
+    const lines = installationDetailLines(record);
+    assert.ok(lines.length > 0);
+    assert.ok(lines.every((l) => l && !/undefined|NaN|Invalid/.test(l)), JSON.stringify(lines));
+  }
+  // An unparseable timestamp must drop the line rather than print Invalid Date.
+  assert.ok(!installationDetailLines({ class: 'range', retrievedAt: 'nonsense' })
+    .some((l) => l.startsWith('RETRIEVED')));
+});
+
+// ---------------------------------------------------------------------------
+// stepSelection — walking the viewport roster
+// ---------------------------------------------------------------------------
+
+/**
+ * Minimal viewer + fetch stand-in for the walk tests. Mirrors the harness used
+ * by the entity tests above; `elements` decides what the roster holds.
+ */
+function withWalkHarness(elements, run) {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const originalFetch = globalThis.fetch;
+  globalThis.document = { addEventListener() {}, removeEventListener() {} };
+  globalThis.window = { dispatchEvent() {} };
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/api/terrain/heights')) {
+      return { ok: true, status: 200, json: async () => ({ results: [{ ellipsoid: 100 }] }) };
+    }
+    return { ok: true, status: 200, json: async () => ({
+      status: 'fresh', retrievedAt: '2026-08-28T00:00:00.000Z', elements,
+    }) };
+  };
+  const dataSources = [];
+  const viewer = {
+    camera: {
+      moveEnd: { addEventListener() { return () => {}; } },
+      // Anchored at the south-west corner so nearest-first order is knowable.
+      positionWC: Cesium.Cartesian3.fromDegrees(-98, 30, 1_000_000),
+      // focusById flies to the picked record; the walk only cares that a
+      // selection was made, so the flight is a no-op that reports completion.
+      flyToBoundingSphere(_sphere, options) { options?.complete?.(); },
+      computeViewRectangle() {
+        return {
+          south: Cesium.Math.toRadians(29), west: Cesium.Math.toRadians(-99),
+          north: Cesium.Math.toRadians(32), east: Cesium.Math.toRadians(-96),
+        };
+      },
+    },
+    scene: { canvas: { addEventListener() {}, removeEventListener() {} },
+      globe: { ellipsoid: Cesium.Ellipsoid.WGS84 }, pick() { return null; } },
+    dataSources: {
+      add(ds) { dataSources.push(ds); return ds; },
+      remove(ds) { const i = dataSources.indexOf(ds); if (i >= 0) dataSources.splice(i, 1); return i >= 0; },
+    },
+  };
+  return (async () => {
+    try {
+      militaryInstallationsLayer.init(viewer);
+      militaryInstallationsLayer.enable();
+      await militaryInstallationsLayer.update();
+      return await run(viewer);
+    } finally {
+      militaryInstallationsLayer.destroy(viewer);
+      globalThis.fetch = originalFetch;
+      if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument;
+      if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow;
+    }
+  })();
+}
+
+const WALK_ELEMENTS = [
+  { type: 'node', id: 1, lat: 30.1, lon: -97.9, tags: { military: 'base', name: 'Alpha' } },
+  { type: 'node', id: 2, lat: 30.5, lon: -97.5, tags: { military: 'base', name: 'Bravo' } },
+  { type: 'node', id: 3, lat: 31.0, lon: -96.5, tags: { military: 'base', name: 'Charlie' } },
+];
+
+test('the walk visits every installation exactly once before repeating', async () => {
+  await withWalkHarness(WALK_ELEMENTS, async () => {
+    const seen = [];
+    for (let i = 0; i < 3; i++) {
+      assert.equal(militaryInstallationsLayer.stepSelection(1), true);
+      seen.push(militaryInstallationsLayer.getNavigationState().label);
+    }
+    assert.equal(new Set(seen).size, 3, `walk repeated itself: ${seen}`);
+    // A fixed order is what makes "3 / 3" true; nearest-from-here would
+    // ping-pong between two mutual neighbours forever.
+    militaryInstallationsLayer.stepSelection(1);
+    assert.equal(militaryInstallationsLayer.getNavigationState().label, seen[0]);
+  });
+});
+
+test('the counter is 1-based and reads 0 while nothing is selected', async () => {
+  await withWalkHarness(WALK_ELEMENTS, async () => {
+    const before = militaryInstallationsLayer.getNavigationState();
+    assert.equal(before.total, 3);
+    assert.equal(before.index, 0);
+    assert.equal(before.label, null);
+
+    militaryInstallationsLayer.stepSelection(1);
+    const first = militaryInstallationsLayer.getNavigationState();
+    assert.equal(first.index, 1);
+    assert.ok(first.label);
+  });
+});
+
+test('the first step opens at the nearest going forward, the farthest going back', async () => {
+  await withWalkHarness(WALK_ELEMENTS, async () => {
+    militaryInstallationsLayer.stepSelection(1);
+    const forward = militaryInstallationsLayer.getNavigationState();
+    assert.equal(forward.index, 1);
+    assert.equal(forward.label, 'Alpha', 'nearest to the camera anchor');
+  });
+  await withWalkHarness(WALK_ELEMENTS, async () => {
+    militaryInstallationsLayer.stepSelection(-1);
+    const back = militaryInstallationsLayer.getNavigationState();
+    assert.equal(back.index, 3);
+    assert.equal(back.label, 'Charlie', 'farthest from the camera anchor');
+  });
+});
+
+test('PREV and NEXT wrap in both directions', async () => {
+  await withWalkHarness(WALK_ELEMENTS, async () => {
+    militaryInstallationsLayer.stepSelection(1);
+    assert.equal(militaryInstallationsLayer.getNavigationState().index, 1);
+    militaryInstallationsLayer.stepSelection(-1);
+    assert.equal(militaryInstallationsLayer.getNavigationState().index, 3, 'PREV from the first wraps to the last');
+    militaryInstallationsLayer.stepSelection(1);
+    assert.equal(militaryInstallationsLayer.getNavigationState().index, 1, 'NEXT from the last wraps to the first');
+  });
+});
+
+test('an empty roster is inert rather than throwing', async () => {
+  await withWalkHarness([], async () => {
+    assert.equal(militaryInstallationsLayer.stepSelection(1), false);
+    assert.equal(militaryInstallationsLayer.stepSelection(-1), false);
+    assert.deepEqual(militaryInstallationsLayer.getNavigationState(), { total: 0, index: 0, label: null });
+  });
 });

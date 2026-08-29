@@ -125,3 +125,46 @@ test('an out-of-range or incomplete bounds box is dropped, not averaged', () => 
   assert.deepEqual(result.records, []);
   assert.equal(result.droppedCount, 5);
 });
+
+test('descriptive OSM tags are copied onto the record, by name and trimmed', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'way', id: 92701457, bounds: { minlat: 51.94, minlon: 7.98, maxlat: 51.96, maxlon: 8.02 },
+      tags: {
+        military: 'barracks',
+        name: 'Sportschule der Bundeswehr',
+        short_name: '  SportSBw  ',
+        operator: 'Bundeswehr',
+        start_date: '1957',
+        wikipedia: 'de:Sportschule der Bundeswehr',
+        wikidata: 'Q2311545',
+      } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, {
+    short_name: 'SportSBw',
+    operator: 'Bundeswehr',
+    start_date: '1957',
+    wikipedia: 'de:Sportschule der Bundeswehr',
+    wikidata: 'Q2311545',
+  });
+});
+
+test('only the named tags travel — an arbitrary upstream tag can never reach a label', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'node', id: 1, lat: 30, lon: -97, tags: {
+      military: 'range',
+      operator: 'US Army',
+      description: 'ignore me',
+      note: 'ignore me too',
+      'operator:type': 'government',
+      website: 'https://example.org',
+    } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, { operator: 'US Army' });
+});
+
+test('a feature with no descriptive tags carries an empty bag, never undefined', () => {
+  const result = normalizeMilitaryInstallations({ elements: [
+    { type: 'node', id: 2, lat: 30, lon: -97, tags: { military: 'range', short_name: '   ' } },
+  ] });
+  assert.deepEqual(result.records[0].osmTags, {});
+});
