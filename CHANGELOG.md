@@ -7,6 +7,8 @@ of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md
 
 ### Added
 
+- Added OrcaRouter as a named provider for the AI HUD summary. Set `ORCAROUTER_API_KEY` and `VITE_HUD_SUMMARY_URL=/api/orcarouter/hud-summary` to route the five-word intelligence readout through the OrcaRouter gateway (an OpenAI-compatible `/v1/responses` upstream with its own namespaced model ids, default `orcarouter/fusion-mini`) instead of OpenAI. Voice still requires OpenAI.
+- Added an `OPENAI_BASE_URL` override so the OpenAI HUD summary path can target any OpenAI-compatible gateway, and a per-IP `GEV_RATELIMIT_ORCAROUTER_PER_MIN` limiter mirroring the OpenAI one.
 - Added honest aircraft identity narration: callsign, operator, registration,
   type, and route come only from selected-contact context, and missing operator,
   route, or type enrichment is named explicitly.

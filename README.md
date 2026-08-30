@@ -140,7 +140,7 @@ No account, no signup. The first-run card will offer to stage a mission for you 
 
 ## 🎙️ Talk to It
 
-> Voice needs an **OpenAI key**. Without one the entire app still runs — the mic button just reports voice is unavailable. The same key drives the **AI HUD summary**: a terse, five-word intelligence-style readout of the current view that regenerates as you move.
+> Voice needs an **OpenAI key**. Without one the entire app still runs — the mic button just reports voice is unavailable. The same key drives the **AI HUD summary**: a terse, five-word intelligence-style readout of the current view that regenerates as you move. Want the summary on a different provider? Point it at an OpenAI-compatible gateway with `VITE_HUD_SUMMARY_URL=/api/orcarouter/hud-summary` and an `ORCAROUTER_API_KEY` — see [API Keys](#-api-keys).
 
 Click **GEV MIC**, grant the microphone, and just talk. This is more than a voice-controlled remote:
 
@@ -289,6 +289,7 @@ Five keys cover the fully keyed experience. Three currently offer no-cost develo
 |---|-----|-----|--------|
 | 🔴 | **Google Maps** *(required)* | The photorealistic 3D planet ([Map Tiles API](https://developers.google.com/maps/documentation/tile)) | [Google Cloud Console](https://console.cloud.google.com/) — metered; [check current pricing](https://developers.google.com/maps/billing-and-pricing/pricing) and URL-restrict it |
 | 🔴 | **OpenAI** | 🎙️ The voice experience + AI HUD summary. Want another provider behind the mic? PRs welcome | [platform.openai.com](https://platform.openai.com) — metered; [check current API pricing](https://openai.com/api/pricing/) |
+| 🟡 | **OrcaRouter** *(optional)* | 🪧 The AI HUD summary on a different provider — an OpenAI-compatible gateway with its own model namespace. Drop in `ORCAROUTER_API_KEY` + `VITE_HUD_SUMMARY_URL=/api/orcarouter/hud-summary` (voice still needs OpenAI) | [orcarouter.ai](https://www.orcarouter.ai) |
 | 🟡 | **AISStream** | 🚢 Live global ships | [aisstream.io](https://aisstream.io) — free, seriously, it's a two-minute signup |
 | 🟡 | **NASA FIRMS** | 🔥 Live active fires | [firms.modaps.eosdis.nasa.gov](https://firms.modaps.eosdis.nasa.gov/api/map_key/) — free |
 | 🟡 | **TomTom** | 🚦 Real traffic instead of an approximate simulation | [developer.tomtom.com](https://developer.tomtom.com) — check the current developer allowance for your account |

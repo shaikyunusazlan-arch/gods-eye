@@ -458,6 +458,21 @@ function googleRateLimiter() {
   if (_googleRateLimiter === undefined) _googleRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_GOOGLE_PER_MIN);
   return _googleRateLimiter;
 }
+let _orcarouterRateLimiter; // undefined = not built yet; null = unlimited; fn = active limiter
+/** OrcaRouter cost endpoint (hud-summary). Null = unlimited (default). */
+function orcarouterRateLimiter() {
+  if (_orcarouterRateLimiter === undefined) _orcarouterRateLimiter = makeOptInRateLimiter(process.env.GEV_RATELIMIT_ORCAROUTER_PER_MIN);
+  return _orcarouterRateLimiter;
+}
+
+/**
+ * OpenAI-compatible API base URL for the HUD summary upstream. Most setups use
+ * the default; the override exists so the summary path can be pointed at any
+ * OpenAI-compatible gateway without a code change.
+ */
+function openAiBaseUrl() {
+  return String(process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '');
+}
 
 /**
  * Apply an opt-in limiter to a request, writing a 429 when over the cap.
@@ -1324,6 +1339,8 @@ const OPENAI_REALTIME_REASONING_DEFAULT = 'low';
 const OPENAI_REALTIME_CONTEXT_TOKENS_DEFAULT = 3000;
 const OPENAI_REALTIME_CONTEXT_RETENTION_DEFAULT = 0.5;
 const OPENAI_HUD_SUMMARY_MODEL_DEFAULT = 'gpt-5-nano';
+const ORCAROUTER_HUD_SUMMARY_MODEL_DEFAULT = 'orcarouter/fusion-mini';
+const ORCAROUTER_BASE_URL_DEFAULT = 'https://api.orcarouter.ai/v1';
 const REALTIME_DEBUG_LOG_DIR = path.join(__dirname, '.gev-logs');
 const REALTIME_DEBUG_LOG_FILE = path.join(REALTIME_DEBUG_LOG_DIR, 'realtime-conversations.jsonl');
 const REALTIME_DEBUG_LOG_MAX_BYTES = 8 * 1024 * 1024;
@@ -4981,7 +4998,7 @@ function openAiRealtimeProxy() {
       try {
         const body = await readRequestBody(req, 64 * 1024);
         const context = JSON.parse(body || '{}');
-        const response = await fetch('https://api.openai.com/v1/responses', {
+        const response = await fetch(`${openAiBaseUrl()}/responses`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -5014,6 +5031,67 @@ function openAiRealtimeProxy() {
         res.statusCode = 502;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ error: error?.message || 'OpenAI HUD summary request failed' }));
+      }
+    });
+
+    middlewares.use('/api/orcarouter/hud-summary', async (req, res) => {
+      if (req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+
+      // Opt-in per-IP throttle (GEV_RATELIMIT_ORCAROUTER_PER_MIN). No-op when unset.
+      if (!enforceOptInRateLimit(orcarouterRateLimiter(), req, res)) return;
+
+      const apiKey = process.env.ORCAROUTER_API_KEY;
+      if (!apiKey) {
+        res.statusCode = 503;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'ORCAROUTER_API_KEY is not set' }));
+        return;
+      }
+
+      try {
+        const body = await readRequestBody(req, 64 * 1024);
+        const context = JSON.parse(body || '{}');
+        // The /v1/responses shape matches OpenAI's Responses API, which is what
+        // the shared HUD summary parser below expects — only the upstream base
+        // URL, key, and model differ. See .env.example for the overrides.
+        const response = await fetch(`${ORCAROUTER_BASE_URL_DEFAULT}/responses`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: process.env.ORCAROUTER_HUD_SUMMARY_MODEL || ORCAROUTER_HUD_SUMMARY_MODEL_DEFAULT,
+            instructions: [
+              "Write one concise intelligence-HUD summary for God's Eye View.",
+              'Use only the supplied place, street, nearby-place, and enabled-layer text labels.',
+              'Prefer the clearest named place and include a relevant enabled layer only when useful.',
+              'Do not infer from coordinates or invent a place.',
+              'Output exactly five words with no title, punctuation, markdown, or introductory phrase.',
+            ].join(' '),
+            input: JSON.stringify(context),
+            reasoning: { effort: 'minimal' },
+            max_output_tokens: 100,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        const summary = toFiveWordHudSummary(extractOpenAiResponseText(data));
+        res.statusCode = response.ok && summary ? 200 : response.status || 502;
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store');
+        res.end(JSON.stringify({
+          summary: summary || null,
+          error: response.ok ? null : data.error?.message || 'OrcaRouter HUD summary request failed',
+        }));
+      } catch (error) {
+        res.statusCode = 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: error?.message || 'OrcaRouter HUD summary request failed' }));
       }
     });
 
