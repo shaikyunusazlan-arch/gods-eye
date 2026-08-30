@@ -2272,6 +2272,7 @@ silently demoting every later lookup for the session.
 - GBFS response size is capped; CCTV health map is bounded.
 - Proxy error payloads are sanitized (no internal error details returned to clients).
 - `OPENAI_API_KEY` is server-side only; the browser receives ephemeral Realtime client secrets from `/api/realtime/token`.
+- `ORCAROUTER_API_KEY` is server-side only; the browser can point the AI HUD summary at `/api/orcarouter/hud-summary` (an OpenAI-compatible `/v1/responses` upstream, model namespaced via `ORCAROUTER_HUD_SUMMARY_MODEL`) instead of the default OpenAI-backed `/api/openai/hud-summary` by setting `VITE_HUD_SUMMARY_URL`.
 - `AISSTREAM_API_KEY` is server-side only; the browser reads the same-origin `/api/ais-live` cache.
 - `/api/google/nearby-places` keeps the Google key out of Places requests issued for voice scene context.
 - `/api/google/text-search` keeps the Google key server-side for view-biased Places recovery used by annotation resolution.
