@@ -121,6 +121,23 @@ export function mapAnalystRecord(raw, index = 0) {
   };
 }
 
+function scheduleStartupDelay(ms, signal) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(() => {
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        window.requestIdleCallback(() => resolve(), { timeout: 1000 });
+      } else {
+        resolve();
+      }
+    }, ms);
+    signal?.addEventListener?.('abort', () => {
+      clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
+}
+
 export function createEarthquakesLayer({ overlayHost = DEFAULT_OVERLAY_HOST } = {}) {
   let _dataSource = null;
   let _count = 0;
@@ -162,9 +179,13 @@ export function createEarthquakesLayer({ overlayHost = DEFAULT_OVERLAY_HOST } = 
     overlayHost.setVisible(EARTHQUAKE_OVERLAY_SOURCE_ID, false);
   },
 
-  async update(viewer) {
+  async update(viewer, { signal } = {}) {
+    if (_lastUpdate === null && typeof window !== 'undefined' && performance.now() < 10000) {
+      await scheduleStartupDelay(1000, signal);
+      if (signal?.aborted || !_enabled) return false;
+    }
     try {
-      const response = await fetch(API_URL);
+      const response = await fetch(API_URL, { signal });
       if (!response.ok) {
         _lastError = `USGS HTTP ${response.status}`;
         console.warn(`[Data:Earthquakes] API returned ${response.status}`);

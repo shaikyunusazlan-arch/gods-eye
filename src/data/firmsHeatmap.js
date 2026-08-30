@@ -248,6 +248,18 @@ export function createFirmsHeatmapLayer({
 
     async update() {
       if (_destroyed || !_enabled || _loading) return;
+      if (_lastUpdate === null && typeof window !== 'undefined' && performance.now() < 10000) {
+        await new Promise((resolve) => {
+          setTimeout(() => {
+            if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+              window.requestIdleCallback(() => resolve(), { timeout: 1000 });
+            } else {
+              resolve();
+            }
+          }, 3500);
+        });
+        if (_destroyed || !_enabled) return;
+      }
       // Scheduled 10-minute poll (and the manager's immediate first update):
       // refetch live fires through the proxy and re-render. Viewport-driven
       // re-renders between polls are handled by the LOD watcher.

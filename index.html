@@ -894,6 +894,33 @@
     </div>
   </div>
 
+  <!-- Gemini Live Activity & Loading Meter (Bottom-Left HUD) -->
+  <div id="gemini-activity-meter" class="gemini-activity-meter gev-gemini-meter" data-state="idle" hidden aria-live="polite">
+    <div class="gemini-meter-shell">
+      <div class="gemini-meter-corner gemini-meter-corner-tl"></div>
+      <div class="gemini-meter-corner gemini-meter-corner-tr"></div>
+      <div class="gemini-meter-corner gemini-meter-corner-bl"></div>
+      <div class="gemini-meter-corner gemini-meter-corner-br"></div>
+      <div class="gemini-meter-header">
+        <span class="gemini-meter-badge"><span class="gemini-meter-dot"></span>GEMINI LIVE</span>
+        <span class="gemini-meter-status-text">IDLE</span>
+      </div>
+      <div class="gemini-meter-track">
+        <div class="gemini-meter-bar"></div>
+        <div class="gemini-meter-scan"></div>
+      </div>
+      <div class="gemini-meter-eq" aria-hidden="true">
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+        <span class="gemini-eq-bar"></span>
+      </div>
+    </div>
+  </div>
+
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

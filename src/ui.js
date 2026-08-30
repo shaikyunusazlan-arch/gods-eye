@@ -10291,3 +10291,48 @@ export class StyleManager {
     this.transitions.clear();
   }
 }
+
+/**
+ * Update the dedicated bottom-left Gemini Live activity meter state and label.
+ * @param {'idle' | 'listening' | 'processing' | 'speaking' | string} state
+ * @param {string} [customLabel]
+ */
+export function updateGeminiMeter(state, customLabel = '') {
+  const meter = document.getElementById('gemini-activity-meter') || document.getElementById('gev-gemini-activity-meter');
+  if (!meter) return;
+
+  const normalizedState = String(state || 'idle').toLowerCase();
+  meter.dataset.state = normalizedState;
+
+  const statusText = meter.querySelector('.gemini-meter-status-text');
+  if (statusText) {
+    if (customLabel) {
+      statusText.textContent = customLabel;
+    } else {
+      switch (normalizedState) {
+        case 'listening':
+        case 'input':
+          statusText.textContent = 'LISTENING';
+          break;
+        case 'processing':
+        case 'executing':
+          statusText.textContent = 'PROCESSING';
+          break;
+        case 'speaking':
+        case 'streaming':
+          statusText.textContent = 'SPEAKING';
+          break;
+        case 'idle':
+        case 'ready':
+        default:
+          statusText.textContent = 'IDLE';
+          break;
+      }
+    }
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.updateGeminiMeter = updateGeminiMeter;
+}
+

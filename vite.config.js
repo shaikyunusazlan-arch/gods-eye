@@ -5224,6 +5224,99 @@ function openAiRealtimeProxy() {
   };
 }
 
+
+function convertJsonSchemaTypes(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(convertJsonSchemaTypes);
+  const converted = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'additionalProperties' || key === '$schema' || key === 'definitions') {
+      continue;
+    }
+    if (key === 'type' && typeof value === 'string') {
+      converted[key] = value.toUpperCase();
+    } else if (key === 'properties' && typeof value === 'object' && value !== null) {
+      const sanitizedProps = convertJsonSchemaTypes(value);
+      if (Object.keys(sanitizedProps).length > 0) {
+        converted.properties = sanitizedProps;
+      }
+    } else if (typeof value === 'object' && value !== null) {
+      converted[key] = convertJsonSchemaTypes(value);
+    } else {
+      converted[key] = value;
+    }
+  }
+  return converted;
+}
+
+function getGeminiFunctionDeclarations(tools) {
+  if (!Array.isArray(tools)) return [];
+  return tools.map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.parameters ? convertJsonSchemaTypes(tool.parameters) : undefined,
+  }));
+}
+
+const GEMINI_ADDITIONAL_TOOLS = [
+  {
+    name: 'adjust_camera_altitude',
+    description: "Zoom in or out by flying straight up or straight down from the current location. Use this when the user asks to go 'down to earth', 'zoom in', or 'zoom out'.",
+    parameters: {
+      type: 'object',
+      properties: {
+        targetAltitudeMeters: {
+          type: 'number',
+          description: 'Target altitude in meters above sea level (e.g. 500 for ground level, 15000000 for space).',
+        },
+        durationSeconds: {
+          type: 'number',
+          description: 'Optional camera flight duration in seconds (default 2.0).',
+        },
+      },
+      required: ['targetAltitudeMeters'],
+    },
+  },
+];
+
+function geminiLiveProxy() {
+  function install(middlewares) {
+    middlewares.use('/api/gemini/config', async (req, res) => {
+      if (req.method !== 'GET' && req.method !== 'POST') {
+        res.statusCode = 405;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+        return;
+      }
+      const apiKey = process.env.GEMINI_API_KEY || '';
+      const model = process.env.GEMINI_LIVE_MODEL || 'models/gemini-2.5-flash-native-audio-latest';
+      const voice = process.env.GEMINI_LIVE_VOICE || 'Puck';
+      const tools = getGeminiFunctionDeclarations([...GEV_REALTIME_TOOLS, ...GEMINI_ADDITIONAL_TOOLS]);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(JSON.stringify({
+        hasKey: Boolean(apiKey),
+        apiKey,
+        model,
+        voice,
+        tools,
+      }));
+    });
+  }
+
+  return {
+    name: 'gemini-live-proxy',
+    configureServer(server) {
+      install(server.middlewares);
+    },
+    configurePreviewServer(server) {
+      install(server.middlewares);
+    },
+  };
+}
+
+
 function extractOpenAiResponseText(data) {
   if (typeof data?.output_text === 'string' && data.output_text.trim()) {
     return data.output_text.trim();
@@ -7359,6 +7452,7 @@ export default defineConfig(({ mode }) => {
       aisLiveProxy(),
       trackBackfillProxies(),
       openAiRealtimeProxy(),
+      geminiLiveProxy(),
       googlePlacesContextProxy(),
     ],
     server: {

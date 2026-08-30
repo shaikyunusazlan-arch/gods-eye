@@ -9161,3 +9161,262 @@ body.scene-playback-mode #first-run-launcher {
   /* Scrolling a tile into view must not animate either. */
   .first-run-choices { scroll-behavior: auto; }
 }
+
+/* Agent Selector Toggle (OpenAI | Gemini | Dual) */
+.gev-voice-agent-selector {
+  display: inline-flex;
+  gap: 0.15rem;
+  margin-left: 0.4rem;
+}
+
+.gev-agent-btn {
+  padding: 0 0.2rem;
+  height: 0.72rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.52rem;
+  letter-spacing: 0.05em;
+  color: var(--text-muted, #7c8b9b);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 2px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.gev-agent-btn:hover {
+  color: var(--text-primary, #fff);
+  border-color: rgba(0, 212, 255, 0.6);
+}
+
+.gev-agent-btn.active {
+  color: #00d4ff;
+  border-color: rgba(0, 212, 255, 0.8);
+  background: rgba(0, 212, 255, 0.18);
+  font-weight: 600;
+}
+
+/* Dedicated Bottom-Left Gemini Activity & Loading Meter */
+.gev-gemini-meter,
+.gemini-activity-meter,
+#gemini-activity-meter {
+  position: fixed;
+  bottom: 58px;
+  left: 36px;
+  z-index: 95;
+  pointer-events: none;
+  user-select: none;
+  font-family: var(--font-mono, 'JetBrains Mono', monospace);
+}
+
+.gev-gemini-meter[hidden],
+.gemini-activity-meter[hidden],
+#gemini-activity-meter[hidden] {
+  display: none !important;
+}
+
+.gemini-meter-shell {
+  position: relative;
+  width: 220px;
+  padding: 8px 10px 9px;
+  background: rgba(6, 13, 24, 0.88);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 10px rgba(0, 229, 255, 0.08);
+  transition: all 0.25s ease;
+}
+
+/* Corner bracket accents */
+.gemini-meter-corner {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-color: rgba(0, 229, 255, 0.65);
+  border-style: solid;
+}
+.gemini-meter-corner-tl { top: -1px; left: -1px; border-width: 1px 0 0 1px; }
+.gemini-meter-corner-tr { top: -1px; right: -1px; border-width: 1px 1px 0 0; }
+.gemini-meter-corner-bl { bottom: -1px; left: -1px; border-width: 0 0 1px 1px; }
+.gemini-meter-corner-br { bottom: -1px; right: -1px; border-width: 0 1px 1px 0; }
+
+.gemini-meter-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.gemini-meter-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+  color: #00e5ff;
+  text-shadow: 0 0 8px rgba(0, 229, 255, 0.6);
+}
+
+.gemini-meter-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #00e5ff;
+  box-shadow: 0 0 6px #00e5ff;
+}
+
+.gemini-meter-status-text {
+  font-size: 8.5px;
+  color: rgba(220, 235, 255, 0.7);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+/* Tactical Progress Track */
+.gemini-meter-track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.gemini-meter-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0%;
+  background: #00e5ff;
+  box-shadow: 0 0 8px #00e5ff;
+  transition: width 0.15s ease;
+}
+
+.gemini-meter-scan {
+  position: absolute;
+  top: 0;
+  left: -40%;
+  width: 40%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, #00e5ff, transparent);
+  display: none;
+}
+
+/* Equalizer Bars */
+.gemini-meter-eq {
+  display: none;
+  align-items: flex-end;
+  gap: 3px;
+  height: 8px;
+  margin-top: 5px;
+}
+
+.gemini-eq-bar {
+  flex: 1;
+  height: 2px;
+  background: #00e5ff;
+  border-radius: 1px;
+  opacity: 0.4;
+  transition: height 0.1s ease;
+}
+
+/* === State: IDLE / READY === */
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='idle'], [data-state='ready']) .gemini-meter-bar {
+  width: 8%;
+  background: rgba(0, 229, 255, 0.4);
+  box-shadow: none;
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='idle'], [data-state='ready']) .gemini-meter-dot {
+  background: rgba(0, 229, 255, 0.5);
+  box-shadow: none;
+}
+
+/* === State: LISTENING / INPUT === */
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='listening'], [data-state='input']) .gemini-meter-shell {
+  border-color: rgba(0, 229, 255, 0.55);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 16px rgba(0, 229, 255, 0.25);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='listening'], [data-state='input']) .gemini-meter-dot {
+  background: #00ffcc;
+  box-shadow: 0 0 10px #00ffcc;
+  animation: gemini-dot-pulse 0.8s infinite alternate;
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='listening'], [data-state='input']) .gemini-meter-status-text {
+  color: #00ffcc;
+  text-shadow: 0 0 6px rgba(0, 255, 204, 0.5);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='listening'], [data-state='input']) .gemini-meter-bar {
+  width: 100%;
+  background: linear-gradient(90deg, #0070f3, #00e5ff);
+  box-shadow: 0 0 10px #00e5ff;
+  animation: gemini-input-pulse 1.2s infinite ease-in-out;
+}
+
+/* === State: PROCESSING / EXECUTING === */
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='processing'], [data-state='executing']) .gemini-meter-shell {
+  border-color: rgba(0, 140, 255, 0.6);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 16px rgba(0, 140, 255, 0.28);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='processing'], [data-state='executing']) .gemini-meter-dot {
+  background: #0099ff;
+  box-shadow: 0 0 10px #0099ff;
+  animation: gemini-dot-pulse 0.4s infinite alternate;
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='processing'], [data-state='executing']) .gemini-meter-status-text {
+  color: #66c2ff;
+  text-shadow: 0 0 6px rgba(0, 153, 255, 0.6);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='processing'], [data-state='executing']) .gemini-meter-scan {
+  display: block;
+  animation: gemini-meter-sweep 0.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* === State: SPEAKING / STREAMING === */
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-meter-shell {
+  border-color: rgba(0, 255, 170, 0.5);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6), 0 0 18px rgba(0, 255, 170, 0.22);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-meter-dot {
+  background: #00ffaa;
+  box-shadow: 0 0 10px #00ffaa;
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-meter-status-text {
+  color: #00ffaa;
+  text-shadow: 0 0 6px rgba(0, 255, 170, 0.5);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-meter-bar {
+  width: 100%;
+  background: linear-gradient(90deg, #00e5ff, #00ffaa);
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-meter-eq {
+  display: flex;
+}
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(1) { animation: gemini-eq 0.6s infinite 0.1s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(2) { animation: gemini-eq 0.6s infinite 0.3s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(3) { animation: gemini-eq 0.6s infinite 0.15s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(4) { animation: gemini-eq 0.6s infinite 0.4s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(5) { animation: gemini-eq 0.6s infinite 0.25s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(6) { animation: gemini-eq 0.6s infinite 0.35s ease-in-out; }
+:is(.gev-gemini-meter, .gemini-activity-meter, #gemini-activity-meter):is([data-state='speaking'], [data-state='streaming']) .gemini-eq-bar:nth-child(7) { animation: gemini-eq 0.6s infinite 0.2s ease-in-out; }
+
+@keyframes gemini-meter-sweep {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+
+@keyframes gemini-dot-pulse {
+  0% { opacity: 0.4; transform: scale(0.85); }
+  100% { opacity: 1; transform: scale(1.15); }
+}
+
+@keyframes gemini-input-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+@keyframes gemini-eq {
+  0%, 100% { height: 2px; opacity: 0.3; }
+  50% { height: 8px; opacity: 1; }
+}

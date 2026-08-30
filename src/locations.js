@@ -347,27 +347,35 @@ export const CANCELLED_SEARCH = Object.freeze({ cancelled: true });
  * default; precise landmarks/buildings use close landmark framing.
  */
 export async function searchAndFlyTo(viewer, query, options = {}) {
-  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) throw new Error('No Google Maps API key available for geocoding');
-
   const beforeFly = typeof options.beforeFly === 'function' ? options.beforeFly : null;
   const mayFly = () => beforeFly === null || beforeFly() !== false;
 
-  // Viewport-biased geocode — the same bias annotationResolver's geocodePlace uses:
-  // "Sixth Street" spoken over Austin must prefer the Sixth Street on screen, not a
-  // same-named road in another city (or the wrong end of town — the W 6th vs E 6th bug).
-  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
-  const bias = viewportBias(viewer);
-  if (bias) url += `&bounds=${bias}`;
-  const response = await fetch(url);
-  const data = await response.json();
+  const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
+  let result = null;
 
-  const result = (data.status === 'OK' && data.results?.length) ? data.results[0] : null;
-  let lat = result?.geometry.location.lat;
-  let lng = result?.geometry.location.lng;
+  if (apiKey) {
+    // Viewport-biased geocode — the same bias annotationResolver's geocodePlace uses:
+    // "Sixth Street" spoken over Austin must prefer the Sixth Street on screen, not a
+    // same-named road in another city (or the wrong end of town — the W 6th vs E 6th bug).
+    let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
+    const bias = viewportBias(viewer);
+    if (bias) url += `&bounds=${bias}`;
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data?.status === 'OK' && Array.isArray(data?.results) && data.results.length > 0) {
+        result = data.results[0];
+      }
+    } catch {
+      result = null;
+    }
+  }
+
+  let lat = result?.geometry?.location?.lat;
+  let lng = result?.geometry?.location?.lng;
   let label = result ? result.formatted_address : null;
   let types = result?.types || [];
-  let viewport = result ? (result.geometry.bounds || result.geometry.viewport) : null;
+  let viewport = result ? (result.geometry?.bounds || result.geometry?.viewport) : null;
 
   // Places-near-view recovery (annotationResolver's twin): a missed geocode, or one
   // that landed implausibly far from the view centre, snaps back to a view-biased
@@ -380,7 +388,34 @@ export async function searchAndFlyTo(viewer, query, options = {}) {
     types = recovered.types || [];
     viewport = placesViewportToBounds(recovered.viewport) || viewport;
   } else if (!result) {
-    return null;
+    // OpenStreetMap Nominatim fallback when Google Geocoding is unavailable or returns 403 / empty
+    try {
+      const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+      const nomRes = await fetch(nomUrl);
+      if (nomRes && typeof nomRes.json === 'function') {
+        const nomData = await nomRes.json();
+        if (Array.isArray(nomData) && nomData.length > 0) {
+          const hit = nomData[0];
+          const hitLat = Number(hit.lat);
+          const hitLon = Number(hit.lon);
+          if (Number.isFinite(hitLat) && Number.isFinite(hitLon)) {
+            lat = hitLat;
+            lng = hitLon;
+            label = hit.display_name || query;
+            types = [hit.type, hit.class].filter(Boolean);
+            if (Array.isArray(hit.boundingbox) && hit.boundingbox.length >= 4) {
+              const [s, n, w, e] = hit.boundingbox.map(Number);
+              viewport = { southwest: { lat: s, lng: w }, northeast: { lat: n, lng: e } };
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return null;
+    }
   }
 
   const requestedRange = finitePositive(options.range);
