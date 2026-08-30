@@ -1,3 +1,5 @@
+import { AudioStreamManager, AudioPlaybackManager } from './audioStreamManager.js';
+import { GeminiLiveClient } from './geminiLiveClient.js';
 import { createGevActionRunner, readLayerLifecycleSummary } from './gevActions.js';
 import {
   DEFAULT_VOICE_TIER,
@@ -220,9 +222,121 @@ export function initGevVoiceCommands({ viewer, styleManager, dataManager, sceneD
     ui.tierButton.addEventListener('click', controller.tierHandler);
   }
   controller.syncCostUi();
+  try {
+    const storedMode = localStorage.getItem('godsEyeView.voiceAgentMode') || 'openai';
+    controller.setAgentMode(storedMode);
+  } catch {}
+  if (ui.agentButtons) {
+    ui.agentButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const mode = btn.dataset.agent;
+        controller.setAgentMode(mode, { startIfIdle: true });
+      });
+    });
+  }
   controller.bindPushToTalkShortcut();
   window.__gevVoiceCommands = controller;
   return controller;
+}
+
+export class GeminiActivityMeter {
+  constructor() {
+    this.root = null;
+    this.statusText = null;
+    this.state = 'idle';
+    this.visible = false;
+    this.mount();
+  }
+
+  mount() {
+    if (this.root || typeof document === 'undefined') return;
+    let el = document.getElementById('gemini-activity-meter') || document.getElementById('gev-gemini-activity-meter');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'gemini-activity-meter';
+      el.className = 'gemini-activity-meter gev-gemini-meter';
+      el.dataset.state = 'idle';
+      el.hidden = true;
+      el.setAttribute('aria-live', 'polite');
+      el.innerHTML = `
+        <div class="gemini-meter-shell">
+          <div class="gemini-meter-corner gemini-meter-corner-tl"></div>
+          <div class="gemini-meter-corner gemini-meter-corner-tr"></div>
+          <div class="gemini-meter-corner gemini-meter-corner-bl"></div>
+          <div class="gemini-meter-corner gemini-meter-corner-br"></div>
+          <div class="gemini-meter-header">
+            <span class="gemini-meter-badge"><span class="gemini-meter-dot"></span>GEMINI LIVE</span>
+            <span class="gemini-meter-status-text">IDLE</span>
+          </div>
+          <div class="gemini-meter-track">
+            <div class="gemini-meter-bar"></div>
+            <div class="gemini-meter-scan"></div>
+          </div>
+          <div class="gemini-meter-eq" aria-hidden="true">
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+            <span class="gemini-eq-bar"></span>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(el);
+    }
+    this.root = el;
+    this.statusText = el.querySelector('.gemini-meter-status-text');
+  }
+
+  setState(state, customLabel = '') {
+    if (!this.root) this.mount();
+    if (!this.root) return;
+    const normalized = String(state || 'idle').toLowerCase();
+    this.state = normalized;
+    this.root.dataset.state = normalized;
+
+    let label = customLabel;
+    if (!label) {
+      switch (normalized) {
+        case 'listening':
+        case 'input':
+          label = 'LISTENING';
+          break;
+        case 'processing':
+        case 'executing':
+          label = 'PROCESSING';
+          break;
+        case 'speaking':
+        case 'streaming':
+          label = 'SPEAKING';
+          break;
+        case 'idle':
+        case 'ready':
+        default:
+          label = 'IDLE';
+          break;
+      }
+    }
+    if (this.statusText) {
+      this.statusText.textContent = label;
+    }
+  }
+
+  setVisible(visible) {
+    if (!this.root) this.mount();
+    if (!this.root) return;
+    this.visible = visible;
+    this.root.hidden = !visible;
+  }
+
+  destroy() {
+    if (this.root) {
+      this.root.remove();
+      this.root = null;
+      this.statusText = null;
+    }
+  }
 }
 
 export class GevRealtimeController {
@@ -232,6 +346,84 @@ export class GevRealtimeController {
     this.radioLayer = radioLayer;
     this.dataManager = dataManager;
     this.radioVoiceDucked = false;
+    this.agentMode = 'openai';
+    this.audioStreamManager = new AudioStreamManager();
+    this.playbackManager = new AudioPlaybackManager();
+    this.geminiMeter = new GeminiActivityMeter();
+
+    this.geminiClient = new GeminiLiveClient({
+      runner: this.runner,
+      onAudioChunk: (base64Data) => {
+        if (this.agentMode === 'gemini' || this.agentMode === 'dual') {
+          this.playbackManager.enqueueAudioChunk(base64Data);
+          if (this.agentMode === 'gemini') {
+            this.geminiMeter.setState('speaking');
+          }
+        }
+      },
+      onStatusChange: (status, detail) => {
+        if (this.agentMode === 'gemini' || (this.agentMode === 'dual' && status === 'executing')) {
+          this.setStatus(status, detail);
+        }
+        if (this.agentMode === 'gemini') {
+          if (status === 'executing' || status === 'processing') {
+            this.geminiMeter.setState('processing', detail || 'PROCESSING');
+          } else if (status === 'listening' || status === 'idle') {
+            if (!this.playbackManager.isPlaying) {
+              this.geminiMeter.setState('idle');
+            }
+          }
+        }
+      },
+      onError: (context, error) => {
+        if (this.agentMode === 'gemini' || this.agentMode === 'dual') {
+          this.reportError(context, error);
+          if (this.agentMode === 'gemini') {
+            this.geminiMeter.setState('idle');
+          }
+        }
+      },
+      onInterrupted: () => {
+        this.playbackManager.stop();
+        if (this.agentMode === 'gemini') {
+          this.geminiMeter.setState('idle');
+        }
+      },
+    });
+
+    this.audioStreamManager.subscribe((base64Chunk) => {
+      if ((this.agentMode === 'gemini' || this.agentMode === 'dual') && this.geminiClient.connected) {
+        this.geminiClient.sendRealtimeAudio(base64Chunk);
+      }
+    });
+
+    this.audioStreamManager.onVoiceActivity = (isActive) => {
+      if (this.agentMode === 'gemini' && this.isActive()) {
+        if (isActive) {
+          this.geminiMeter.setState('listening');
+        } else {
+          if (this.playbackManager.isPlaying) {
+            this.geminiMeter.setState('speaking');
+          } else if (this.geminiClient.status === 'executing') {
+            this.geminiMeter.setState('processing');
+          } else {
+            this.geminiMeter.setState('idle');
+          }
+        }
+      }
+    };
+
+    this.playbackManager.onPlaybackStateChange = (isPlaying) => {
+      if (this.agentMode === 'gemini') {
+        if (isPlaying) {
+          this.geminiMeter.setState('speaking');
+        } else if (this.geminiClient.status === 'executing') {
+          this.geminiMeter.setState('processing');
+        } else {
+          this.geminiMeter.setState('idle');
+        }
+      }
+    };
     this.pc = null;
     this.dc = null;
     this.stream = null;
@@ -329,6 +521,31 @@ export class GevRealtimeController {
     this.debugLog('controller.created', { status: this.status });
   }
 
+  setAgentMode(mode, { startIfIdle = false } = {}) {
+    if (!['openai', 'gemini', 'dual'].includes(mode)) mode = 'openai';
+    const changed = this.agentMode !== mode;
+    this.agentMode = mode;
+    if (this.geminiMeter) {
+      this.geminiMeter.setVisible(mode === 'gemini');
+      if (mode === 'gemini') this.geminiMeter.setState('idle');
+    }
+    try {
+      localStorage.setItem('godsEyeView.voiceAgentMode', mode);
+    } catch {}
+    if (this.ui?.agentButtons) {
+      this.ui.agentButtons.forEach((btn) => {
+        if (btn.dataset.agent === mode) btn.classList.add('active');
+        else btn.classList.remove('active');
+      });
+    }
+    if (this.isActive()) {
+      this.stop();
+      this.start({ pushToTalk: this.pushToTalkMode });
+    } else if (startIfIdle) {
+      this.start({ pushToTalk: false });
+    }
+  }
+
   isActive() {
     return this.status !== 'idle' && this.status !== 'error';
   }
@@ -366,6 +583,32 @@ export class GevRealtimeController {
     });
     this.syncCostUi();
     this.setStatus('connecting', 'Requesting microphone');
+    console.log('[GEV Voice] Starting voice session in mode:', this.agentMode);
+
+    if (this.agentMode === 'gemini') {
+      try {
+        console.log('[GEV Voice] Initializing Gemini Live Client exclusively...');
+        await this.geminiClient.connect();
+        await this.audioStreamManager.start();
+        this.setStatus('listening', 'Ask or command (Gemini)');
+        return;
+      } catch (err) {
+        console.error('[GEV Voice] Gemini client connection failed:', err);
+        this.setStatus('error', err.message || 'Gemini connection failed');
+        return;
+      }
+    }
+
+    if (this.agentMode === 'dual') {
+      try {
+        console.log('[GEV Voice] Initializing Gemini Live Client for Dual mode...');
+        await this.geminiClient.connect();
+        await this.audioStreamManager.start();
+      } catch (err) {
+        console.warn('[GEV Voice] Dual mode Gemini initialization warning:', err);
+      }
+    }
+
     this.debugLog('session.starting', {
       epoch,
       tier: this.voiceTier,
@@ -773,6 +1016,11 @@ export class GevRealtimeController {
     // releases its own resources instead of promoting them onto a stopped
     // controller (H7).
     this.startEpoch++;
+
+    if (this.geminiClient) this.geminiClient.disconnect();
+    if (this.audioStreamManager) this.audioStreamManager.stop();
+    if (this.playbackManager) this.playbackManager.stop();
+
     this.radioHandoffEpoch++;
     for (const controller of this.activeToolAbortControllers) controller.abort();
     this.activeToolAbortControllers.clear();
@@ -867,6 +1115,12 @@ export class GevRealtimeController {
       this.shortcutKeyUpHandler = null;
       this.shortcutBlurHandler = null;
       this.shortcutVisibilityHandler = null;
+    }
+    if (removeUi && this.geminiMeter) {
+      this.geminiMeter.destroy();
+      this.geminiMeter = null;
+    } else if (this.agentMode === 'gemini' && this.geminiMeter) {
+      this.geminiMeter.setState('idle');
     }
     if (removeUi && this.annotationEventUnsubscribe) {
       // Full teardown (re-init path): stop listening to the long-lived annotation
@@ -2553,6 +2807,11 @@ function createVoiceControl({ reset = false } = {}) {
     root.innerHTML = `
       <div class="gev-voice-heading">
         <div class="gev-voice-kicker">AI AGENT</div>
+        <div class="gev-voice-agent-selector" role="radiogroup" aria-label="Voice Agent Mode">
+          <button id="gev-agent-openai" class="gev-agent-btn active" type="button" data-agent="openai" title="OpenAI Realtime API">OpenAI</button>
+          <button id="gev-agent-gemini" class="gev-agent-btn" type="button" data-agent="gemini" title="Gemini Multimodal Live API">Gemini</button>
+          <button id="gev-agent-dual" class="gev-agent-btn" type="button" data-agent="dual" title="Dual-Agent Concurrent Mode">Dual</button>
+        </div>
         <div id="gev-voice-status">OFF</div>
         <div class="gev-voice-cost">
           <button id="gev-voice-tier" class="gev-voice-tier-btn" type="button" aria-pressed="false" title="Voice model tier — applies next session">STD</button>
@@ -2606,5 +2865,6 @@ function createVoiceControl({ reset = false } = {}) {
     errorDetail: root.querySelector('#gev-voice-error-detail'),
     tierButton: root.querySelector('#gev-voice-tier'),
     costValue: root.querySelector('#gev-voice-cost-value'),
+    agentButtons: root.querySelectorAll('.gev-agent-btn'),
   };
 }

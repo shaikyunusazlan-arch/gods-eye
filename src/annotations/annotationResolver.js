@@ -604,44 +604,86 @@ function ringAreaM2(ring) {
  */
 async function geocodePlace(query, biasRect, signal) {
   const apiKey = window.__GOOGLE_MAPS_API_KEY__ || import.meta.env.GOOGLE_MAPS_API_KEY;
-  if (!apiKey) return null;
 
   const cacheKey = `${query.toLowerCase()}|${biasRect || ''}`;
   const cached = cacheRead(geocodeCache, cacheKey);
   if (cached !== undefined) return cached;
 
-  let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
-  if (biasRect) url += `&bounds=${biasRect}`;
+  let place = null;
+  let googleGeocodeContacted = false;
 
-  try {
-    const response = await fetch(url, { signal });
-    const data = await response.json();
-    if (data.status !== 'OK' || !data.results?.length) {
-      // ZERO_RESULTS is a definitive not-found (cacheable); OVER_QUERY_LIMIT /
-      // REQUEST_DENIED / UNKNOWN_ERROR are transient → don't poison the cache.
-      negCache(geocodeCache, cacheKey, signal, data?.status === 'ZERO_RESULTS');
-      return null;
+  if (apiKey) {
+    let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(query)}&key=${apiKey}`;
+    if (biasRect) url += `&bounds=${biasRect}`;
+
+    try {
+      const response = await fetch(url, { signal });
+      const data = await response.json();
+      if (data?.status === 'OK' && Array.isArray(data?.results) && data.results.length > 0) {
+        googleGeocodeContacted = true;
+        const result = data.results[0];
+        place = {
+          lat: result.geometry.location.lat,
+          lon: result.geometry.location.lng,
+          label: shortLabel(result.formatted_address),
+          primaryName: extractPrimaryName(result),
+          types: result.types || [],
+          viewport: normalizeGeocodeViewport(result.geometry?.bounds || result.geometry?.viewport),
+        };
+      } else if (data?.status === 'ZERO_RESULTS') {
+        googleGeocodeContacted = true;
+      }
+    } catch {
+      // fall through to Nominatim fallback
     }
-    const result = data.results[0];
-    const place = {
-      lat: result.geometry.location.lat,
-      lon: result.geometry.location.lng,
-      label: shortLabel(result.formatted_address),
-      // The CANONICAL name of the resolved feature (e.g. "Mission District",
-      // "Texas State Capitol") — used for OSM name-matching instead of the raw
-      // utterance, so incidental tokens ("...Texas", "...Austin") can't win.
-      primaryName: extractPrimaryName(result),
-      types: result.types || [],
-      // Geocode viewport (sw/ne box framing the feature), normalized to the Places
-      // low/high shape — sizes grounds discs and flyTo framing for geocode anchors.
-      viewport: normalizeGeocodeViewport(result.geometry?.bounds || result.geometry?.viewport),
-    };
+  }
+
+  if (place) {
     cacheWrite(geocodeCache, cacheKey, place);
     return place;
-  } catch {
-    negCache(geocodeCache, cacheKey, signal, false); // network/abort — transient
+  }
+
+  if (googleGeocodeContacted) {
+    negCache(geocodeCache, cacheKey, signal, true);
     return null;
   }
+
+  // OpenStreetMap Nominatim fallback
+  try {
+    const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`;
+    const nomRes = await fetch(nomUrl, { signal });
+    if (nomRes.ok) {
+      const nomData = await nomRes.json();
+      if (Array.isArray(nomData) && nomData.length > 0) {
+        const hit = nomData[0];
+        const hitLat = Number(hit.lat);
+        const hitLon = Number(hit.lon);
+        if (Number.isFinite(hitLat) && Number.isFinite(hitLon)) {
+          let vp = null;
+          if (Array.isArray(hit.boundingbox) && hit.boundingbox.length >= 4) {
+            const [s, n, w, e] = hit.boundingbox.map(Number);
+            vp = normalizeGeocodeViewport({ southwest: { lat: s, lng: w }, northeast: { lat: n, lng: e } });
+          }
+          place = {
+            lat: hitLat,
+            lon: hitLon,
+            label: shortLabel(hit.display_name),
+            primaryName: hit.name || hit.display_name?.split(',')?.[0]?.trim() || query,
+            types: [hit.type, hit.class].filter(Boolean),
+            viewport: vp,
+          };
+          cacheWrite(geocodeCache, cacheKey, place);
+          return place;
+        }
+      }
+    }
+  } catch {
+    negCache(geocodeCache, cacheKey, signal, false);
+    return null;
+  }
+
+  negCache(geocodeCache, cacheKey, signal, true);
+  return null;
 }
 
 /** Geocoding returns {southwest:{lat,lng},northeast:{lat,lng}}; normalize to the Places
@@ -683,33 +725,84 @@ async function placesTextSearch(query, centerLat, centerLon, radiusM, signal) {
     lon: String(centerLon),
     radiusM: String(radiusM),
   });
+
+  let place = null;
+  let googlePlacesContacted = false;
   try {
     const response = await fetch(`/api/google/text-search?${params}`, { signal });
-    if (!response.ok) { negCache(placesCache, cacheKey, signal, false); return null; } // transient
-    const data = await response.json();
-    const hit = Array.isArray(data?.places)
-      ? data.places.find((p) => Number.isFinite(p?.latitude) && Number.isFinite(p?.longitude))
-      : null;
-    if (!hit) { negCache(placesCache, cacheKey, signal, true); return null; } // definitive no-match
-    const place = {
-      lat: hit.latitude,
-      lon: hit.longitude,
-      label: hit.name || null,
-      distanceM: approximateDistanceM(centerLat, centerLon, hit.latitude, hit.longitude),
-      viewport: hit.viewport || null,
-      // Entity identity/classification — the proxy already pays for these in its field
-      // mask, so keep them: `primaryType`/`types` classify the feature (point-like
-      // monument vs compound) and `id` is a stable identity key for future caching/dedup.
-      id: hit.id || null,
-      primaryType: hit.primaryType || null,
-      types: Array.isArray(hit.types) ? hit.types : [],
-    };
+    if (response.ok) {
+      googlePlacesContacted = true;
+      const data = await response.json();
+      const hit = Array.isArray(data?.places)
+        ? data.places.find((p) => Number.isFinite(p?.latitude) && Number.isFinite(p?.longitude))
+        : null;
+      if (hit) {
+        place = {
+          lat: hit.latitude,
+          lon: hit.longitude,
+          label: hit.name || null,
+          distanceM: approximateDistanceM(centerLat, centerLon, hit.latitude, hit.longitude),
+          viewport: hit.viewport || null,
+          id: hit.id || null,
+          primaryType: hit.primaryType || null,
+          types: Array.isArray(hit.types) ? hit.types : [],
+        };
+      }
+    }
+  } catch {
+    // ignore Google Places failure and fallback to Nominatim
+  }
+
+  if (place) {
     cacheWrite(placesCache, cacheKey, place);
     return place;
-  } catch {
-    negCache(placesCache, cacheKey, signal, false); // network/abort — transient
+  }
+
+  if (googlePlacesContacted) {
+    negCache(placesCache, cacheKey, signal, true);
     return null;
   }
+
+  try {
+    const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`;
+    const nomRes = await fetch(nomUrl, { signal });
+    if (nomRes.ok) {
+      const nomData = await nomRes.json();
+      if (Array.isArray(nomData) && nomData.length > 0) {
+        const hit = nomData[0];
+        const hitLat = Number(hit.lat);
+        const hitLon = Number(hit.lon);
+        if (Number.isFinite(hitLat) && Number.isFinite(hitLon)) {
+          let vp = null;
+          if (Array.isArray(hit.boundingbox) && hit.boundingbox.length >= 4) {
+            const [s, n, w, e] = hit.boundingbox.map(Number);
+            vp = {
+              low: { latitude: s, longitude: w },
+              high: { latitude: n, longitude: e },
+            };
+          }
+          place = {
+            lat: hitLat,
+            lon: hitLon,
+            label: hit.display_name || q,
+            distanceM: approximateDistanceM(centerLat, centerLon, hitLat, hitLon),
+            viewport: vp,
+            id: hit.osm_id ? `osm-${hit.osm_id}` : null,
+            primaryType: hit.type || null,
+            types: [hit.type, hit.class].filter(Boolean),
+          };
+          cacheWrite(placesCache, cacheKey, place);
+          return place;
+        }
+      }
+    }
+  } catch {
+    negCache(placesCache, cacheKey, signal, false);
+    return null;
+  }
+
+  negCache(placesCache, cacheKey, signal, true);
+  return null;
 }
 
 /**

@@ -4061,6 +4061,23 @@ const flightsLayer = {
    * @returns {Promise<void>}
    */
   async update(viewer, { signal = null } = {}) {
+    if (_lastUpdate === null && typeof window !== 'undefined' && performance.now() < 10000) {
+      await new Promise((resolve) => {
+        if (signal?.aborted) return resolve();
+        const timer = setTimeout(() => {
+          if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+            window.requestIdleCallback(() => resolve(), { timeout: 1000 });
+          } else {
+            resolve();
+          }
+        }, 2000);
+        signal?.addEventListener?.('abort', () => {
+          clearTimeout(timer);
+          resolve();
+        }, { once: true });
+      });
+      if (signal?.aborted || !_enabled) return;
+    }
     const nowMs = Date.now();
     const trackingRefreshEpoch = ++_trackingRefreshEpoch;
     _lastTrackingRefreshOutcome = {

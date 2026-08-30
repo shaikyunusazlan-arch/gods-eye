@@ -789,6 +789,10 @@ export function createGevActionRunner({ viewer, styleManager, dataManager, scene
       return adjustCameraZoom(viewer, args);
     }
 
+    if (name === 'adjust_camera_altitude' || name === 'adjust_altitude') {
+      return adjustCameraAltitude(viewer, args);
+    }
+
     if (name === 'zoom_to_globe') {
       if (typeof styleManager?.resetToGlobeView === 'function') {
         return styleManager.resetToGlobeView();
@@ -2036,6 +2040,52 @@ const COMPASS_16 = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WS
 
 function compassDir(azDeg) {
   return COMPASS_16[Math.round(((((azDeg % 360) + 360) % 360)) / 22.5) % 16];
+}
+
+export function adjustCameraAltitude(viewer, args = {}) {
+  if (!viewer?.camera) {
+    throw new Error('Viewer camera is unavailable');
+  }
+
+  const rawAlt = args.targetAltitudeMeters ?? args.target_altitude_meters ?? args.altitudeMeters ?? args.altitude;
+  const targetAltitudeMeters = Number(rawAlt);
+  if (!Number.isFinite(targetAltitudeMeters) || targetAltitudeMeters <= 0) {
+    throw new Error('adjust_camera_altitude requires a positive targetAltitudeMeters number');
+  }
+
+  const durationSeconds = Math.max(0.5, Math.min(10, Number(args.durationSeconds ?? args.duration ?? 2.0) || 2.0));
+
+  const camera = viewer.camera;
+  const carto = camera.positionCartographic;
+  const currentLon = Cesium.Math.toDegrees(carto.longitude);
+  const currentLat = Cesium.Math.toDegrees(carto.latitude);
+  const currentAlt = carto.height;
+
+  const heading = camera.heading;
+  const pitch = camera.pitch;
+  const roll = camera.roll;
+
+  interruptCameraMotion('nav:adjust_camera_altitude');
+
+  camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(currentLon, currentLat, targetAltitudeMeters),
+    orientation: {
+      heading,
+      pitch,
+      roll,
+    },
+    duration: durationSeconds,
+  });
+
+  return {
+    ok: true,
+    action: 'adjust_camera_altitude',
+    latitude: Number(currentLat.toFixed(5)),
+    longitude: Number(currentLon.toFixed(5)),
+    previousAltitudeMeters: Math.round(currentAlt),
+    targetAltitudeMeters: Math.round(targetAltitudeMeters),
+    durationSeconds,
+  };
 }
 
 function nextIssPass(viewer, args) {
