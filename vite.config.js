@@ -30,6 +30,7 @@ import { promises as fsp } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { setDefaultAutoSelectFamily } from 'node:net';
 import https from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { directionToHeading } from './src/data/directionText.js';
@@ -1973,6 +1974,14 @@ function tomtomProxy() {
  * @returns {import('vite').Plugin}
  */
 function firmsProxy() {
+  // Fix #68: on Node 24, Happy Eyeballs can pick an unreachable IPv6 route to
+  // FIRMS (firms.modaps.eosdis.nasa.gov) when only IPv4 is available, so the
+  // proxy fails with `fetch failed` / ENETUNREACH even though curl -4 works.
+  // Force IPv4-first for the dev-server process. No-op on Node < 20.12.
+  if (typeof setDefaultAutoSelectFamily === 'function') {
+    try { setDefaultAutoSelectFamily(false); } catch { /* older Node: ignored */ }
+  }
+
   const TTL_MS = 30 * 60_000;
   const STATUS_TTL_MS = 5 * 60_000;
   const SOURCES = ['VIIRS_NOAA20_NRT', 'VIIRS_NOAA21_NRT', 'VIIRS_SNPP_NRT'];
